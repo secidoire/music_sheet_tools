@@ -23,6 +23,11 @@ export interface PageAnalysis {
   rotation: Rotation
   /** Orientation the automatic detection chose. */
   autoRotation: Rotation
+  /**
+   * Real resolution of a render ÷ the resolution it was requested at, as measured by the
+   * staff-line spacing (see `staffDpiScale`). 1 when the page has no staves.
+   */
+  dpiScale: number
   /** Page looks like a two-page spread (landscape once rotated). */
   isSpread: boolean
   /** Detected split position as a fraction of page width. */
@@ -49,7 +54,7 @@ export interface GlobalSettings {
   /** Output margin on A4 in millimetres. */
   marginMm: number
   vAlign: VAlign
-  /** Upper bound for enlarging content beyond its original physical size. */
+  /** Upper bound for enlarging content beyond its (staff-normalised) original size. */
   maxUpscale: number
 }
 
@@ -67,6 +72,7 @@ export interface PageOverrides {
 export interface ResolvedPage {
   bypass: boolean
   rotation: Rotation
+  dpiScale: number
   split: boolean
   splitX: number
   angles: number[]

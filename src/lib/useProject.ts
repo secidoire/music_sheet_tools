@@ -169,7 +169,8 @@ export function useProject() {
         // Very large canvases fail on memory-constrained devices (e.g. iOS); retry at a lower resolution.
         for (const dpi of EXPORT_FALLBACK.filter((d) => d <= exportDpi)) {
           try {
-            const raster = await doc.pages[p.pageNo - 1].render(dpi)
+            // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
+            const raster = await doc.pages[p.pageNo - 1].render(dpi / page.dpiScale)
             await c.call({ type: 'exportPage', raster, page, outDpi: dpi }, [raster.gray])
             break
           } catch (e) {

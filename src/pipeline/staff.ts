@@ -220,3 +220,70 @@ export function clefSide(det: StaffDetection, width: number): { left: number; ri
   }
   return { left, right, ratio: (inkL + 1) / (inkR + 1) }
 }
+
+export interface StaffSpaceEstimate {
+  /** Distance between adjacent staff lines (centre to centre) in pixels. */
+  spacing: number
+  /** Share of all line+gap pairs that agree with `spacing`; low means "no staves here". */
+  confidence: number
+}
+
+/**
+ * Staff-line spacing from run lengths, without knowing the resolution: along every few
+ * columns, each black run followed by a white run measures one line + one gap, and on a
+ * score the most common such pair is the staff-line spacing (the classic OMR estimate).
+ * Rows are measured too and the clearer of the two wins, so sideways pages work.
+ * The threshold block is relative to the image size, so this is scale-free.
+ */
+export function estimateStaffSpace(cv: CV, gray: GrayImage): StaffSpaceEstimate | null {
+  const { width: w, height: h } = gray
+  const src = new cv.Mat(h, w, cv.CV_8UC1)
+  src.data.set(gray.data)
+  const bin = new cv.Mat()
+  const block = Math.max(15, Math.round(Math.min(w, h) / 40)) | 1
+  cv.adaptiveThreshold(src, bin, 1, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, block, 10)
+  const ink = bin.data as Uint8Array
+  const best = [measure(ink, w, h, true), measure(ink, w, h, false)].sort((a, b) => b.confidence - a.confidence)[0]
+  src.delete()
+  bin.delete()
+  return best.spacing > 0 ? best : null
+}
+
+function measure(ink: Uint8Array, w: number, h: number, vertical: boolean): StaffSpaceEstimate {
+  const [lines, len, step, stride] = vertical ? [w, h, w, 1] : [h, w, 1, w]
+  const max = Math.max(8, Math.round(Math.min(w, h) / 25))
+  const pairs = new Float64Array(max + 2)
+  let total = 0
+  for (let l = 0; l < lines; l += 3) {
+    const base = l * stride
+    let i = 0
+    while (i < len && ink[base + i * step]) i++
+    while (i < len) {
+      // At a white pixel following black: measure white run, then the next black run.
+      let b0 = i
+      while (i < len && !ink[base + i * step]) i++
+      const white = i - b0
+      b0 = i
+      while (i < len && ink[base + i * step]) i++
+      const black = i - b0
+      if (i >= len) break
+      const sum = white + black
+      // Thin lines only: a black run longer than the gap is a note head, beam or stem end.
+      if (black <= white && sum <= max) {
+        pairs[sum]++
+        total++
+      }
+    }
+  }
+  let mode = 0
+  for (let s = 3; s <= max; s++) if (pairs[s] + pairs[s - 1] + pairs[s + 1] > pairs[mode] + (mode ? pairs[mode - 1] + pairs[mode + 1] : 0)) mode = s
+  if (!mode || !total) return { spacing: 0, confidence: 0 }
+  let near = 0
+  let weighted = 0
+  const tol = Math.max(1, Math.round(mode * 0.15))
+  for (let s = mode - tol; s <= mode + tol; s++) {
+    near += pairs[s]
+    weighted += pairs[s] * s
+  }
+  return { spacing: weighted / near, confidence: near / total }
+}

@@ -14,7 +14,8 @@ import { parseArgs } from 'node:util'
 import { createCanvas } from '@napi-rs/canvas'
 import { listPdfs, openPdf, renderPageRGBA, rgbaToGray, saveImage } from './node-io.ts'
 import { loadCvNode } from './node-cv.ts'
-import { analyzePage, ANALYSIS_DPI, renderPage, resolvePage } from '../src/pipeline/process.ts'
+import { analyzePage, ANALYSIS_DPI, renderPage, resolvePage, staffDpiScale } from '../src/pipeline/process.ts'
+import { resizeGray } from '../src/pipeline/image.ts'
 import { DEFAULT_SETTINGS } from '../src/pipeline/defaults.ts'
 import type { AnalysisDebug } from '../src/pipeline/process.ts'
 
@@ -32,7 +33,7 @@ const cv = await loadCvNode()
 const outDir = args.out!
 mkdirSync(outDir, { recursive: true })
 const summary = `${outDir}/summary.tsv`
-writeFileSync(summary, 'id\tpage\tsize\trot\tspread\tsplitX\tmethod\tprofile\though\tgain\tms\tfile\n')
+writeFileSync(summary, 'id\tpage\tsize\tdpiScale\trot\tspread\tsplitX\tmethod\tprofile\though\tgain\tms\tfile\n')
 
 const files = listPdfs('samples').filter((f) => f.normalize('NFC').includes(args.filter!.normalize('NFC')))
 for (const [fi, file] of files.entries()) {
@@ -40,9 +41,11 @@ for (const [fi, file] of files.entries()) {
   const doc = await openPdf(file)
   const pages = Math.min(doc.numPages, Number(args.pages))
   for (let p = 1; p <= pages; p++) {
-    const gray = rgbaToGray(await renderPageRGBA(doc, p, ANALYSIS_DPI))
+    const raw = rgbaToGray(await renderPageRGBA(doc, p, ANALYSIS_DPI))
     const t0 = performance.now()
-    const { analysis, debug } = analyzePage(cv, gray)
+    const dpiScale = staffDpiScale(cv, raw, ANALYSIS_DPI)
+    const gray = resizeGray(cv, raw, 1 / dpiScale)
+    const { analysis, debug } = analyzePage(cv, gray, ANALYSIS_DPI, undefined, dpiScale)
     const ms = Math.round(performance.now() - t0)
     await saveImage(`${outDir}/${id}_p${p}_detect.jpg`, drawOverlay(debug), 4, 1800)
 
@@ -50,7 +53,7 @@ for (const [fi, file] of files.entries()) {
     appendFileSync(
       summary,
       [
-        id, p, `${gray.width}x${gray.height}`, analysis.rotation, analysis.isSpread ? 'Y' : '-',
+        id, p, `${gray.width}x${gray.height}`, dpiScale.toFixed(2), analysis.rotation, analysis.isSpread ? 'Y' : '-',
         analysis.splitX.toFixed(3), analysis.splitMethod,
         skews.map((s) => s.profileAngle.toFixed(2)).join('/'),
         skews.map((s) => s.houghAngle.toFixed(2)).join('/'),
@@ -58,11 +61,11 @@ for (const [fi, file] of files.entries()) {
         ms, file,
       ].join('\t') + '\n',
     )
-    console.log(id, p, `rot ${analysis.rotation}`, analysis.splitMethod, analysis.splitX.toFixed(3), skews.map((s) => `${s.profileAngle}|${s.houghAngle}`).join(' '), `${ms}ms`)
+    console.log(id, p, `scale ${dpiScale.toFixed(2)} rot ${analysis.rotation}`, analysis.splitMethod, analysis.splitX.toFixed(3), skews.map((s) => `${s.profileAngle}|${s.houghAngle}`).join(' '), `${ms}ms`)
 
     if (!args['no-render']) {
       const dpi = Number(args.dpi)
-      const src = dpi === ANALYSIS_DPI ? gray : rgbaToGray(await renderPageRGBA(doc, p, dpi))
+      const src = dpi === ANALYSIS_DPI ? gray : resizeGray(cv, rgbaToGray(await renderPageRGBA(doc, p, dpi)), 1 / dpiScale)
       const resolved = resolvePage(analysis, DEFAULT_SETTINGS)
       const t1 = performance.now()
       const sheets = renderPage(cv, src, dpi, resolved, dpi)
