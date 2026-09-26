@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { GlobalSettings, PageOverrides, Rotation } from '../pipeline/types.ts'
 import { resolvePage } from '../pipeline/process.ts'
 import { MAX_SKEW_DEG } from '../pipeline/deskew.ts'
@@ -22,6 +22,10 @@ interface StageProps {
 /** Before/after view of the selected page. On narrow screens only one side is shown at a time. */
 export function PageStage({ page, settings, onOverrides, index, count, onSelect }: StageProps) {
   const [view, setView] = useState<'before' | 'after'>('after')
+  const swipe = useSwipe((dir) => {
+    const i = index + dir
+    if (i >= 0 && i < count) onSelect(i)
+  })
   const a = page.analysis
   const nav = (
     <div className="pager">
@@ -77,11 +81,11 @@ export function PageStage({ page, settings, onOverrides, index, count, onSelect 
             onSplitX={(x) => onOverrides((p) => ({ ...p, splitX: x }))}
           />
         </section>
-        <section className="compare-after">
+        <section className="compare-after" {...swipe}>
           <h3>
             処理後(A4){stale && <span className="badge">更新中…</span>}
           </h3>
-          <div className={`sheets${stale ? ' stale' : ''}`}>
+          <div className={`sheets${stale ? ' stale' : ''}`} style={{ '--n': page.previewUrls?.length ?? 1 } as React.CSSProperties}>
             {page.previewUrls?.map((u, i) => <img key={u} src={u} alt={`処理後 ${i + 1}`} className="sheet" />) ?? <div className="sheet placeholder" />}
           </div>
         </section>
@@ -219,6 +223,26 @@ export function PageControls({ page, settings, onOverrides, onRotate }: Controls
       </div>
     </section>
   )
+}
+
+/** Horizontal swipe → -1 (to the previous page) / +1 (to the next). Vertical movement is left to scrolling. */
+function useSwipe(onSwipe: (dir: -1 | 1) => void) {
+  const start = useRef<{ x: number; y: number } | null>(null)
+  return {
+    onTouchStart: (e: React.TouchEvent) => {
+      const t = e.touches[0]
+      start.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null
+    },
+    onTouchEnd: (e: React.TouchEvent) => {
+      const s = start.current
+      start.current = null
+      if (!s) return
+      const t = e.changedTouches[0]
+      const dx = t.clientX - s.x
+      const dy = t.clientY - s.y
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 2) onSwipe(dx < 0 ? 1 : -1)
+    },
+  }
 }
 
 function Origin({ manual }: { manual: boolean }) {

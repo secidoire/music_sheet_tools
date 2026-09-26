@@ -43,7 +43,7 @@ export function SourceView({ url, width: srcW, height: srcH, rotation, split, sp
     : [{ x0: 0, x1: width, angle: angles[0] ?? 0 }]
 
   return (
-    <div className="source-view" ref={ref} style={{ aspectRatio: `${width} / ${height}` }}>
+    <div className="source-view" ref={ref} style={{ aspectRatio: `${width} / ${height}`, maxWidth: `calc(var(--view-h) * ${width / height})` }}>
       <img
         src={url}
         alt="処理前"
