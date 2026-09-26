@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { GlobalSettings, PageAnalysis, PageOverrides, Rotation } from '../pipeline/types.ts'
 import { DEFAULT_SETTINGS } from '../pipeline/defaults.ts'
 import { ANALYSIS_DPI, resolvePage } from '../pipeline/process.ts'
 import { ProcessorClient } from '../worker/client.ts'
-import { openPdf, rasterToJpegUrl, renderPage } from './pdf.ts'
+import { rasterToJpegUrl } from './pdf.ts'
+import { openSources, type Source } from './source.ts'
 
 export const PREVIEW_DPI = 100
 /** Export resolutions to fall back through when the browser can't allocate a canvas that large. */
@@ -41,39 +41,41 @@ export function useProject() {
   const [exporting, setExporting] = useState<ExportProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [exportDpi, setExportDpi] = useState(600)
-  const docRef = useRef<PDFDocumentProxy | null>(null)
+  const docRef = useRef<Source | null>(null)
   const loadGen = useRef(0)
 
   const updatePage = useCallback((key: string, patch: Partial<PageState> | ((p: PageState) => Partial<PageState>)) => {
     setPages((ps) => ps.map((p) => (p.key === key ? { ...p, ...(typeof patch === 'function' ? patch(p) : patch) } : p)))
   }, [])
 
-  const load = useCallback(async (file: File) => {
+  /** Opens PDFs and/or images as one document (pages in file-name order). */
+  const load = useCallback(async (files: File[]) => {
     const gen = ++loadGen.current
     setError(null)
     try {
       const c = getClient()
       await c.call({ type: 'reset' })
-      await docRef.current?.loadingTask.destroy()
+      await docRef.current?.destroy()
+      docRef.current = null
       setPages((old) => {
         for (const p of old) [p.sourceUrl, ...(p.previewUrls ?? [])].forEach((u) => u && URL.revokeObjectURL(u))
         return []
       })
-      const doc = await openPdf(await file.arrayBuffer())
+      const doc = await openSources(files)
       docRef.current = doc
-      setFileName(file.name)
+      setFileName(doc.name)
       setSelected(0)
-      const initial: PageState[] = Array.from({ length: doc.numPages }, (_, i) => ({
+      const initial: PageState[] = doc.pages.map((_, i) => ({
         key: `${gen}:${i + 1}`,
         pageNo: i + 1,
         overrides: {},
       }))
       setPages(initial)
-      setLoading({ done: 0, total: doc.numPages })
+      setLoading({ done: 0, total: doc.pages.length })
       for (const p of initial) {
         if (gen !== loadGen.current) return
         try {
-          const raster = await renderPage(doc, p.pageNo, ANALYSIS_DPI)
+          const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
           const sourceUrl = await rasterToJpegUrl(raster, 1600)
           const sourceSize = { width: raster.width, height: raster.height }
           const { analysis } = await c.call({ type: 'analyze', pageKey: p.key, raster }, [raster.gray])
@@ -82,11 +84,11 @@ export function useProject() {
         } catch (e) {
           updatePage(p.key, { error: String(e) })
         }
-        setLoading({ done: p.pageNo, total: doc.numPages })
+        setLoading({ done: p.pageNo, total: doc.pages.length })
       }
       setLoading(null)
     } catch (e) {
-      setError(`PDFを読み込めませんでした: ${e instanceof Error ? e.message : e}`)
+      setError(`ファイルを読み込めませんでした: ${e instanceof Error ? e.message : e}`)
       setLoading(null)
     }
   }, [updatePage])
@@ -154,7 +156,7 @@ export function useProject() {
         // Very large canvases fail on memory-constrained devices (e.g. iOS); retry at a lower resolution.
         for (const dpi of EXPORT_FALLBACK.filter((d) => d <= exportDpi)) {
           try {
-            const raster = await renderPage(doc, p.pageNo, dpi)
+            const raster = await doc.pages[p.pageNo - 1].render(dpi)
             await c.call({ type: 'exportPage', raster, page, outDpi: dpi }, [raster.gray])
             break
           } catch (e) {
@@ -165,7 +167,7 @@ export function useProject() {
         setExporting({ done: i + 1, total: pages.length })
       }
       const { pdf } = await c.call({ type: 'exportEnd' })
-      const base = (fileName ?? 'score').replace(/\.pdf$/i, '')
+      const base = (fileName ?? 'score').replace(/ ほか\d+件$/, '').replace(/\.[a-z0-9]+$/i, '')
       download(new Blob([pdf as Uint8Array<ArrayBuffer>], { type: 'application/pdf' }), `${base}_A4.pdf`)
     } catch (e) {
       setError(`書き出しに失敗しました: ${e instanceof Error ? e.message : e}`)

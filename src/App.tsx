@@ -3,6 +3,7 @@ import { useProject } from './lib/useProject.ts'
 import { PageEditor } from './components/PageEditor.tsx'
 import { PageList } from './components/PageList.tsx'
 import { SettingsBar } from './components/SettingsBar.tsx'
+import { isImage, isPdf } from './lib/source.ts'
 
 export default function App() {
   const p = useProject()
@@ -20,8 +21,9 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [p])
 
-  const openFile = (f: File | undefined) => {
-    if (f && (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))) void p.load(f)
+  const openFiles = (list: FileList | null | undefined) => {
+    const files = [...(list ?? [])].filter((f) => isPdf(f) || isImage(f))
+    if (files.length) void p.load(files)
   }
 
   return (
@@ -35,7 +37,7 @@ export default function App() {
       onDrop={(e) => {
         e.preventDefault()
         setDragOver(false)
-        openFile(e.dataTransfer.files[0])
+        openFiles(e.dataTransfer.files)
       }}
     >
       <header>
@@ -43,8 +45,17 @@ export default function App() {
         {p.fileName && <span className="file-name">{p.fileName}</span>}
         <div className="spacer" />
         <label className="button">
-          PDFを開く
-          <input type="file" accept="application/pdf,.pdf" hidden onChange={(e) => openFile(e.target.files?.[0])} />
+          ファイルを開く
+          <input
+            type="file"
+            accept="application/pdf,.pdf,image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              openFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
         </label>
         <button type="button" className="primary" disabled={!p.pages.length || !!p.loading || !!p.exporting} onClick={() => void p.exportPdf()}>
           {p.exporting ? `書き出し中 ${p.exporting.done}/${p.exporting.total}` : 'A4 PDFを書き出し'}
@@ -63,9 +74,11 @@ export default function App() {
 
       {p.pages.length === 0 ? (
         <main className="drop-zone">
-          <p>楽譜のPDFをここにドラッグ&ドロップ</p>
+          <p>楽譜のPDF・画像をここにドラッグ&ドロップ</p>
           <p className="hint">
             見開きの分割・傾き補正・背景の白飛ばし・余白トリミングを行い、A4のPDFに書き出します。
+            <br />
+            画像(JPG・PNG など)は複数まとめて選ぶと、ファイル名順に1つのPDFになります。
             <br />
             処理はすべてブラウザ内で行われ、ファイルはどこにも送信されません。
           </p>
