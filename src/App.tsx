@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useProject } from './lib/useProject.ts'
+import { useProject, type ExportResult } from './lib/useProject.ts'
 import { PageEditor } from './components/PageEditor.tsx'
 import { PageList } from './components/PageList.tsx'
 import { SettingsBar } from './components/SettingsBar.tsx'
@@ -65,6 +65,7 @@ export default function App() {
       <SettingsBar settings={p.settings} onChange={p.setSettings} exportDpi={p.exportDpi} onExportDpi={p.setExportDpi} />
 
       {p.error && <div className="error" role="alert">{p.error}</div>}
+      {p.exported && <ExportedBar result={p.exported} onClose={p.dismissExported} />}
       {p.loading && (
         <div className="progress">
           読み込み・解析中 {p.loading.done}/{p.loading.total}
@@ -89,6 +90,30 @@ export default function App() {
           {page && <PageEditor page={page} settings={p.settings} onOverrides={(o) => p.setOverrides(page.key, o)} onRotate={(r) => p.rotatePage(page.key, r)} />}
         </main>
       )}
+    </div>
+  )
+}
+
+/**
+ * Shown after an export: the automatic download can be blocked or turned into a preview
+ * on phones, so the file can be saved (or sent to the Files app / other apps) from here.
+ */
+function ExportedBar({ result, onClose }: { result: ExportResult; onClose: () => void }) {
+  const canShare = typeof navigator.canShare === 'function' && navigator.canShare({ files: [result.file] })
+  return (
+    <div className="exported" role="status">
+      <span>書き出し完了: {result.name}</span>
+      <a className="button primary" href={result.url} download={result.name}>
+        ダウンロード
+      </a>
+      {canShare && (
+        <button type="button" onClick={() => void navigator.share({ files: [result.file] }).catch(() => {})}>
+          共有・ファイルに保存
+        </button>
+      )}
+      <button type="button" className="link" onClick={onClose} aria-label="閉じる">
+        閉じる
+      </button>
     </div>
   )
 }

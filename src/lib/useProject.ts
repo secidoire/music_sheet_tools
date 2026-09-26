@@ -24,6 +24,14 @@ export interface PageState {
   error?: string
 }
 
+/** Finished export, kept so it can be saved again with a fresh tap (see `saveFile`). */
+export interface ExportResult {
+  name: string
+  file: File
+  /** Object URL of the PDF as a download-only blob. */
+  url: string
+}
+
 export interface ExportProgress {
   done: number
   total: number
@@ -40,6 +48,7 @@ export function useProject() {
   const [loading, setLoading] = useState<{ done: number; total: number } | null>(null)
   const [exporting, setExporting] = useState<ExportProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [exported, setExported] = useState<ExportResult | null>(null)
   const [exportDpi, setExportDpi] = useState(600)
   const docRef = useRef<Source | null>(null)
   const loadGen = useRef(0)
@@ -52,6 +61,10 @@ export function useProject() {
   const load = useCallback(async (files: File[]) => {
     const gen = ++loadGen.current
     setError(null)
+    setExported((old) => {
+      if (old) URL.revokeObjectURL(old.url)
+      return null
+    })
     try {
       const c = getClient()
       await c.call({ type: 'reset' })
@@ -168,7 +181,15 @@ export function useProject() {
       }
       const { pdf } = await c.call({ type: 'exportEnd' })
       const base = (fileName ?? 'score').replace(/ ほか\d+件$/, '').replace(/\.[a-z0-9]+$/i, '')
-      download(new Blob([pdf as Uint8Array<ArrayBuffer>], { type: 'application/pdf' }), `${base}_A4.pdf`)
+      const name = `${base}_A4.pdf`
+      const bytes = pdf as Uint8Array<ArrayBuffer>
+      // octet-stream: with application/pdf, mobile browsers open a viewer instead of saving.
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }))
+      setExported((old) => {
+        if (old) URL.revokeObjectURL(old.url)
+        return { name, url, file: new File([bytes], name, { type: 'application/pdf' }) }
+      })
+      saveUrl(url, name)
     } catch (e) {
       setError(`書き出しに失敗しました: ${e instanceof Error ? e.message : e}`)
     } finally {
@@ -176,17 +197,25 @@ export function useProject() {
     }
   }, [pages, settings, fileName, exportDpi])
 
-  return { fileName, pages, settings, setSettings, selected, setSelected, loading, exporting, error, load, setOverrides, rotatePage, exportPdf, exportDpi, setExportDpi }
+  const dismissExported = useCallback(() => setExported(null), [])
+
+  return { fileName, pages, settings, setSettings, selected, setSelected, loading, exporting, exported, dismissExported, error, load, setOverrides, rotatePage, exportPdf, exportDpi, setExportDpi }
 }
 
 function sig(p: PageState, g: GlobalSettings): string {
   return p.analysis ? JSON.stringify(resolvePage(p.analysis, g, p.overrides)) : ''
 }
 
-function download(blob: Blob, name: string) {
+/**
+ * Starts a download of `url`. Browsers may ignore this when it runs long after the click
+ * that started the export (iOS Safari), which is why the result also stays on screen
+ * with its own download link.
+ */
+export function saveUrl(url: string, name: string) {
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
+  a.href = url
   a.download = name
+  document.body.append(a)
   a.click()
-  setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
+  a.remove()
 }
