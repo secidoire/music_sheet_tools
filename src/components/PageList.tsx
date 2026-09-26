@@ -8,7 +8,7 @@ interface Props {
 
 export function PageList({ pages, selected, onSelect }: Props) {
   return (
-    <ol className="page-list">
+    <ol className="page-list" aria-label="ページ一覧">
       {pages.map((p, i) => {
         const o = p.overrides
         const edited = Object.keys(o).length > 0 || (p.analysis !== undefined && p.analysis.rotation !== p.analysis.autoRotation)
@@ -21,14 +21,14 @@ export function PageList({ pages, selected, onSelect }: Props) {
                 ) : p.sourceUrl ? (
                   <img src={p.sourceUrl} alt="" className="dim" />
                 ) : (
-                  <div className="thumb-placeholder" />
+                  <div className="thumb-placeholder shimmer" />
                 )}
               </div>
               <div className="meta">
-                <span>p.{p.pageNo}</span>
+                <span className="page-no">{p.pageNo}</span>
                 {p.analysis?.isSpread && <span className="tag">見開き</span>}
                 {o.bypass && <span className="tag warn">補正なし</span>}
-                {edited && !o.bypass && <span className="tag">手動</span>}
+                {edited && !o.bypass && <span className="tag manual">手動</span>}
                 {p.error && <span className="tag warn">エラー</span>}
               </div>
             </button>
