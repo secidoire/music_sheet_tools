@@ -10,6 +10,8 @@ export type CV = typeof import('@techstark/opencv-js')
 
 export type WhitenMode = 'levels' | 'adaptive'
 export type VAlign = 'top' | 'center'
+/** Clockwise quarter turn applied to the source page before anything else. */
+export type Rotation = 0 | 90 | 180 | 270
 
 /**
  * Result of the automatic detection for one source page.
@@ -17,7 +19,11 @@ export type VAlign = 'top' | 'center'
  * so it can be computed on a low-res render and applied to a 300dpi one.
  */
 export interface PageAnalysis {
-  /** Page looks like a two-page spread (landscape). */
+  /** Orientation the rest of the analysis was done in (auto-detected unless forced). */
+  rotation: Rotation
+  /** Orientation the automatic detection chose. */
+  autoRotation: Rotation
+  /** Page looks like a two-page spread (landscape once rotated). */
   isSpread: boolean
   /** Detected split position as a fraction of page width. */
   splitX: number
@@ -60,6 +66,7 @@ export interface PageOverrides {
 /** Fully resolved parameters for rendering one source page. */
 export interface ResolvedPage {
   bypass: boolean
+  rotation: Rotation
   split: boolean
   splitX: number
   angles: number[]

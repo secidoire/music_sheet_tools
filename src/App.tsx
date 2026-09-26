@@ -73,7 +73,7 @@ export default function App() {
       ) : (
         <main className="workspace">
           <PageList pages={p.pages} selected={p.selected} onSelect={p.setSelected} />
-          {page && <PageEditor page={page} settings={p.settings} onOverrides={(o) => p.setOverrides(page.key, o)} />}
+          {page && <PageEditor page={page} settings={p.settings} onOverrides={(o) => p.setOverrides(page.key, o)} onRotate={(r) => p.rotatePage(page.key, r)} />}
         </main>
       )}
     </div>

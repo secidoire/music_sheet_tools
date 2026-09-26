@@ -329,7 +329,9 @@ header h1 {
 }
 
 .source-view img {
-  width: 100%;
+  position: absolute;
+  left: 50%;
+  top: 50%;
   box-shadow: var(--sheet-shadow);
   background: #fff;
 }

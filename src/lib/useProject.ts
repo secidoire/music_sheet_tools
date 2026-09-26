@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
-import type { GlobalSettings, PageAnalysis, PageOverrides } from '../pipeline/types.ts'
+import type { GlobalSettings, PageAnalysis, PageOverrides, Rotation } from '../pipeline/types.ts'
 import { DEFAULT_SETTINGS } from '../pipeline/defaults.ts'
 import { ANALYSIS_DPI, resolvePage } from '../pipeline/process.ts'
 import { ProcessorClient } from '../worker/client.ts'
@@ -125,6 +125,22 @@ export function useProject() {
     [updatePage],
   )
 
+  /**
+   * Turns a page (auto-detected orientation when `rotation` is undefined). Split and skew
+   * depend on the orientation, so the page is analysed again and its manual fixes dropped.
+   */
+  const rotatePage = useCallback(
+    async (key: string, rotation?: Rotation) => {
+      try {
+        const { analysis } = await getClient().call({ type: 'reanalyze', pageKey: key, rotation })
+        updatePage(key, { analysis, overrides: {} })
+      } catch (e) {
+        updatePage(key, { error: String(e) })
+      }
+    },
+    [updatePage],
+  )
+
   const exportPdf = useCallback(async () => {
     const doc = docRef.current
     if (!doc) return
@@ -158,7 +174,7 @@ export function useProject() {
     }
   }, [pages, settings, fileName, exportDpi])
 
-  return { fileName, pages, settings, setSettings, selected, setSelected, loading, exporting, error, load, setOverrides, exportPdf, exportDpi, setExportDpi }
+  return { fileName, pages, settings, setSettings, selected, setSelected, loading, exporting, error, load, setOverrides, rotatePage, exportPdf, exportDpi, setExportDpi }
 }
 
 function sig(p: PageState, g: GlobalSettings): string {

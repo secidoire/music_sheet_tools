@@ -1,4 +1,4 @@
-import type { GlobalSettings, PageOverrides } from '../pipeline/types.ts'
+import type { GlobalSettings, PageOverrides, Rotation } from '../pipeline/types.ts'
 import { resolvePage } from '../pipeline/process.ts'
 import { MAX_SKEW_DEG } from '../pipeline/deskew.ts'
 import type { PageState } from '../lib/useProject.ts'
@@ -8,11 +8,13 @@ interface Props {
   page: PageState
   settings: GlobalSettings
   onOverrides: (o: PageOverrides | ((prev: PageOverrides) => PageOverrides)) => void
+  /** Turns the page; undefined restores the detected orientation. */
+  onRotate: (rotation?: Rotation) => void
 }
 
 const METHOD_LABEL = { gutter: '余白', shadow: '綴じ目の影', center: '中央' } as const
 
-export function PageEditor({ page, settings, onOverrides }: Props) {
+export function PageEditor({ page, settings, onOverrides, onRotate }: Props) {
   const a = page.analysis
   if (!a || !page.sourceUrl || !page.sourceSize) {
     return <div className="editor empty">{page.error ? `エラー: ${page.error}` : '解析中…'}</div>
@@ -21,7 +23,9 @@ export function PageEditor({ page, settings, onOverrides }: Props) {
   const o = page.overrides
   const autoAngles = r.split ? (a.angles.length === 2 ? a.angles : [a.wholeAngle, a.wholeAngle]) : [a.wholeAngle]
   const partNames = r.split ? ['左ページ', '右ページ'] : ['ページ']
-  const edited = Object.keys(o).length > 0
+  const rotated = a.rotation !== a.autoRotation
+  const edited = Object.keys(o).length > 0 || rotated
+  const turn = (by: number) => onRotate((((a.rotation + by) % 360) + 360) % 360 as Rotation)
   const stale = page.previewSig !== JSON.stringify(r)
 
   const setAngle = (i: number, v: number | undefined) =>
@@ -38,10 +42,22 @@ export function PageEditor({ page, settings, onOverrides }: Props) {
           <input type="checkbox" checked={r.bypass} onChange={(e) => onOverrides((p) => ({ ...p, bypass: e.target.checked || undefined }))} />
           補正を取り消す(原本のまま)
         </label>
-        <button type="button" disabled={!edited} onClick={() => onOverrides({})}>
+        <button type="button" disabled={!edited} onClick={() => (rotated ? onRotate(undefined) : onOverrides({}))}>
           自動検出に戻す
         </button>
       </div>
+
+      <fieldset className="editor-controls" disabled={r.bypass}>
+        <button type="button" onClick={() => turn(-90)} title="左に90°回転">
+          ↺ 左に回転
+        </button>
+        <button type="button" onClick={() => turn(90)} title="右に90°回転">
+          ↻ 右に回転
+        </button>
+        <span className="hint">
+          向き {a.rotation === 0 ? 'そのまま' : `${a.rotation}°回転`}({rotated ? '手動' : '自動'})
+        </span>
+      </fieldset>
 
       <fieldset className="editor-controls" disabled={r.bypass}>
         <label className="toggle">
@@ -100,6 +116,7 @@ export function PageEditor({ page, settings, onOverrides }: Props) {
             url={page.sourceUrl}
             width={page.sourceSize.width}
             height={page.sourceSize.height}
+            rotation={r.bypass ? 0 : r.rotation}
             split={r.split && !r.bypass}
             splitX={r.splitX}
             angles={r.bypass ? [0] : r.angles}

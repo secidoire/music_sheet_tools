@@ -2,7 +2,7 @@
  * Runs the processing pipeline on the PDFs in samples/ without any UI and writes
  * images for visual inspection to debug-out/pipeline/:
  *
- *   fNN_pM_detect.jpg  analysis overlay: split search window (blue), split line (red),
+ *   fNN_pM_detect.jpg  analysis overlay (page as oriented): split search window (blue), split line (red),
  *                      Hough segments (green), detected angles (text)
  *   fNN_pM_outK.jpg    corrected A4 output(s)
  *   summary.tsv        one line per page with the detection numbers
@@ -16,7 +16,6 @@ import { listPdfs, openPdf, renderPageRGBA, rgbaToGray, saveImage } from './node
 import { loadCvNode } from './node-cv.ts'
 import { analyzePage, ANALYSIS_DPI, renderPage, resolvePage } from '../src/pipeline/process.ts'
 import { DEFAULT_SETTINGS } from '../src/pipeline/defaults.ts'
-import type { GrayImage } from '../src/pipeline/types.ts'
 import type { AnalysisDebug } from '../src/pipeline/process.ts'
 
 const { values: args } = parseArgs({
@@ -33,7 +32,7 @@ const cv = await loadCvNode()
 const outDir = args.out!
 mkdirSync(outDir, { recursive: true })
 const summary = `${outDir}/summary.tsv`
-writeFileSync(summary, 'id\tpage\tsize\tspread\tsplitX\tmethod\tprofile\though\tgain\tms\tfile\n')
+writeFileSync(summary, 'id\tpage\tsize\trot\tspread\tsplitX\tmethod\tprofile\though\tgain\tms\tfile\n')
 
 const files = listPdfs('samples').filter((f) => f.normalize('NFC').includes(args.filter!.normalize('NFC')))
 for (const [fi, file] of files.entries()) {
@@ -45,13 +44,13 @@ for (const [fi, file] of files.entries()) {
     const t0 = performance.now()
     const { analysis, debug } = analyzePage(cv, gray)
     const ms = Math.round(performance.now() - t0)
-    await saveImage(`${outDir}/${id}_p${p}_detect.jpg`, drawOverlay(gray, debug), 4, 1800)
+    await saveImage(`${outDir}/${id}_p${p}_detect.jpg`, drawOverlay(debug), 4, 1800)
 
     const skews = debug.split ? debug.halves : [debug.whole]
     appendFileSync(
       summary,
       [
-        id, p, `${gray.width}x${gray.height}`, analysis.isSpread ? 'Y' : '-',
+        id, p, `${gray.width}x${gray.height}`, analysis.rotation, analysis.isSpread ? 'Y' : '-',
         analysis.splitX.toFixed(3), analysis.splitMethod,
         skews.map((s) => s.profileAngle.toFixed(2)).join('/'),
         skews.map((s) => s.houghAngle.toFixed(2)).join('/'),
@@ -59,7 +58,7 @@ for (const [fi, file] of files.entries()) {
         ms, file,
       ].join('\t') + '\n',
     )
-    console.log(id, p, analysis.splitMethod, analysis.splitX.toFixed(3), skews.map((s) => `${s.profileAngle}|${s.houghAngle}`).join(' '), `${ms}ms`)
+    console.log(id, p, `rot ${analysis.rotation}`, analysis.splitMethod, analysis.splitX.toFixed(3), skews.map((s) => `${s.profileAngle}|${s.houghAngle}`).join(' '), `${ms}ms`)
 
     if (!args['no-render']) {
       const dpi = Number(args.dpi)
@@ -69,13 +68,14 @@ for (const [fi, file] of files.entries()) {
       const sheets = renderPage(cv, src, dpi, resolved, dpi)
       const rms = Math.round(performance.now() - t1)
       for (const [k, s] of sheets.entries()) await saveImage(`${outDir}/${id}_p${p}_out${k}.jpg`, s.image, 1, 1400)
-      console.log(`   rendered ${sheets.length} sheet(s) in ${rms}ms`)
+      console.log(`   rendered ${sheets.length} sheet(s) in ${rms}ms, staves ${sheets.map((s) => s.staves.length).join('/')}`)
     }
   }
   await doc.loadingTask.destroy()
 }
 
-function drawOverlay(gray: GrayImage, d: AnalysisDebug) {
+function drawOverlay(d: AnalysisDebug) {
+  const { gray } = d
   const { width: w, height: h } = gray
   const c = createCanvas(w, h)
   const ctx = c.getContext('2d')
