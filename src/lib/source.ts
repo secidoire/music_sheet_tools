@@ -1,6 +1,7 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { RasterPayload } from '../worker/protocol.ts'
 import { openPdf, renderPage } from './pdf.ts'
+import { assumedLongMm } from '../pipeline/paper.ts'
 
 /** One page of the loaded input, rasterised on demand. */
 export interface SourcePage {
@@ -57,15 +58,9 @@ async function decode(f: File): Promise<ImageBitmap> {
   }
 }
 
-/**
- * Physical resolution assumed for an image. Image files rarely carry a trustworthy DPI
- * (phones and many scanner apps write 72 or 96), so the page is taken to be A4 — or an
- * A4 spread (A3) when it is clearly landscape — and the resolution follows from that.
- * The pipeline only needs it for millimetre tolerances and to keep staff sizes consistent.
- */
+/** Resolution an image is taken to have: its paper size is unknown, so see `assumedLongMm`. */
 export function nominalDpi(width: number, height: number): number {
-  const longMm = width / height > 1.15 ? 420 : 297
-  return Math.max(width, height) / (longMm / 25.4)
+  return Math.max(width, height) / (assumedLongMm(width, height) / 25.4)
 }
 
 /** Same tile limit as the PDF rasteriser: keeps every canvas under mobile Safari's area cap. */

@@ -15,7 +15,8 @@ export interface Box {
  * Works on a ~50dpi copy: ink is found by adaptive threshold, dilated (~2mm) so that
  * notes and text merge into blobs, then components are filtered:
  * - dust: blobs smaller than ~6x6mm are ignored
- * - scanner edges: thin, long blobs hugging the image border are ignored
+ * - scanner edges: thin, long blobs hugging the image border are ignored, and so are
+ *   bare lines or line frames spanning half the page anywhere (paper edges, binding)
  *
  * With `staves` (same coordinates as `img`) the music itself anchors the box and other
  * blobs only join when they belong to it, see `keepBlob`. Without staves (title pages,
@@ -46,11 +47,17 @@ export function contentBox(cv: CV, img: GrayImage, dpi: number, staves: Staff[] 
   const edge = Math.max(1, Math.round(1.5 * mm))
   const blobs: Box[] = []
   for (let i = 1; i < n; i++) {
-    const [x, y, w, h] = stats.data32S.subarray(i * 5, i * 5 + 4)
+    const [x, y, w, h, area] = stats.data32S.subarray(i * 5, i * 5 + 5)
     if (w < 6 * mm && h < 6 * mm) continue
     const touches = x <= edge || y <= edge || x + w >= W - edge || y + h >= H - edge
     const thin = Math.min(w, h) < 6 * mm && Math.max(w, h) > 30 * mm
     if (touches && thin) continue
+    // Bare lines across most of the page are paper or scanner edges (or the binding),
+    // wherever they lie, alone or joined into a frame; printed content that large is a
+    // dense blob, while an edge frame is little more than its outline.
+    // (Its mean stroke width area / (w + h) stays within ~1.5 line widths for a line, an L
+    // or a U; a ragged edge with specks along it still fills only a sliver of its box.)
+    if ((w > W * 0.5 || h > H * 0.5) && (area / (w + h) < 4 * mm || area < w * h * 0.08)) continue
     blobs.push({ x, y, width: w, height: h })
   }
   const kept = staves.length ? keepBlobs(blobs, staves.map((t) => ({ x0: t.x0 * s, x1: t.x1 * s, top: t.top * s, bottom: t.bottom * s })), mm) : blobs

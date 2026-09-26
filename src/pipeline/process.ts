@@ -65,8 +65,8 @@ export function analyzePage(
  * Staff lines dominate the long straight strokes of a score, so a page whose vertical
  * strokes far outnumber its horizontal ones is lying on its side. Which way up it goes is
  * decided by the clefs: they sit at the start (left end) of every staff. A page whose
- * staves already run horizontally is only turned upside down when the clefs clearly sit
- * on the right, since a wrong flip is far worse than a missed one.
+ * staves already run horizontally is only turned upside down when most staves clearly
+ * have their clef ink on the right, since a wrong flip is far worse than a missed one.
  */
 export function detectOrientation(cv: CV, gray: GrayImage, dpi: number): Rotation {
   const strokeCount = (g: GrayImage) => {
@@ -75,14 +75,16 @@ export function detectOrientation(cv: CV, gray: GrayImage, dpi: number): Rotatio
   }
   const cw = rotateQuarter(cv, gray, 90)
   if (strokeCount(gray) >= 0.5 * strokeCount(cw)) {
-    const up = detectStaves(cv, gray, dpi)
-    const c = clefSide(up, gray.width)
-    return up.staves.length >= 3 && c.ratio < 1 / 1.5 ? 180 : 0
+    const c = clefSide(detectStaves(cv, gray, dpi), gray.width)
+    const flipped = c.right >= 3 && c.right >= 3 * c.left && c.ratio < 1 / 1.5
+    return flipped ? 180 : 0
   }
   const a = clefSide(detectStaves(cv, cw, dpi), cw.width)
   const ccw = rotateQuarter(cv, gray, 270)
   const b = clefSide(detectStaves(cv, ccw, dpi), ccw.width)
-  return b.ratio > a.ratio ? 270 : 90
+  const va = a.left - a.right
+  const vb = b.left - b.right
+  return vb > va || (vb === va && b.ratio > a.ratio) ? 270 : 90
 }
 
 /** Lossless clockwise rotation by a multiple of 90°. */
@@ -145,7 +147,8 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
   } else {
     parts.push(gray)
   }
-  return parts.map((part, i) => {
+  const sheets: RenderedSheet[] = []
+  parts.forEach((part, i) => {
     const img = whiten(cv, part, p.whiten, dpi)
     const angle = p.angles[i] ?? 0
     let box: Box | null = null
@@ -161,8 +164,11 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
         samples: t.samples.map((q) => ({ x: q.x / s, top: q.top / s })),
       }))
     }
-    return { image: layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale), content: box, staves }
+    // One side of a spread left blank (the back of a cover, an empty last page): no sheet for it.
+    if (p.trim && p.split && !box) return
+    sheets.push({ image: layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale), content: box, staves })
   })
+  return sheets
 }
 
 /** Canvas size of `img` rotated by `deg` with nothing clipped. */

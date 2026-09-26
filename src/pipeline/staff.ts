@@ -1,6 +1,6 @@
 import type { CV, GrayImage } from './types.ts'
 import { inkMask } from './image.ts'
-import { horizontalStrokes } from './deskew.ts'
+import { detectSkew, horizontalStrokes } from './deskew.ts'
 
 export interface Staff {
   /** Horizontal extent of the staff lines. */
@@ -27,10 +27,11 @@ const MIN_SPACING_MM = 0.9
 const MAX_SPACING_MM = 4
 
 /**
- * Finds five-line staves in a roughly deskewed page (residual skew ≲ 0.5°).
+ * Finds five-line staves in a page that may still be tilted by a few degrees.
  *
  * The page is cut into narrow vertical strips. In each strip the row profile of the
- * horizontal-stroke mask shows staff lines as thin rows covering most of the strip;
+ * horizontal-stroke mask — taken along the page's overall skew, so that a thin tilted
+ * line stays in one or two rows — shows staff lines as thin rows covering most of the strip;
  * five of them at an even spacing form a staff segment. Segments are then chained
  * across strips, which tolerates gentle curvature, and the exact left/right ends are
  * read from the columns where the lines are actually present.
@@ -42,17 +43,24 @@ export function detectStaves(cv: CV, gray: GrayImage, dpi: number): StaffDetecti
   const strokes = horizontalStrokes(cv, ink, w, h, dpi)
 
   const sw = Math.max(16, Math.round(12 * mm))
-  const maxThick = Math.max(3, Math.round(0.6 * mm))
+  // +1: the profile below ORs two rows, which thickens every line by one row.
+  const maxThick = Math.max(3, Math.round(0.6 * mm)) + 1
+  const t = Math.tan((detectSkew(cv, strokes, w, { x: 0, y: 0, width: w, height: h }).angle * Math.PI) / 180)
   const segs: Seg[] = []
   const profile = new Float64Array(h)
   for (let sx = 0, k = 0; sx + sw / 2 <= w; sx += sw, k++) {
     const ex = Math.min(w, sx + sw)
-    for (let y = 0; y < h; y++) {
-      let c = 0
-      const row = y * w
-      for (let x = sx; x < ex; x++) c += strokes[row + x]
-      profile[y] = c / (ex - sx)
+    const xc = (sx + ex) / 2
+    profile.fill(0)
+    for (let x = sx; x < ex; x++) {
+      // Row y of the profile is the row the line through (xc, y) has reached at column x.
+      const shift = Math.round((x - xc) * t)
+      for (let y = Math.max(0, -shift); y < Math.min(h, h - shift - 1); y++) {
+        const i = (y + shift) * w + x
+        profile[y] += strokes[i] | strokes[i + w]
+      }
     }
+    for (let y = 0; y < h; y++) profile[y] /= ex - sx
     const lines: number[] = []
     for (let y = 0; y < h; y++) {
       if (profile[y] < 0.5) continue
@@ -67,7 +75,7 @@ export function detectStaves(cv: CV, gray: GrayImage, dpi: number): StaffDetecti
       const mean = (lines[i + 4] - lines[i]) / 4
       const even = gaps.every((g) => Math.abs(g - mean) <= Math.max(1.5, mean * 0.2))
       if (even && mean >= MIN_SPACING_MM * mm && mean <= MAX_SPACING_MM * mm) {
-        segs.push({ strip: k, x: (sx + ex) / 2, top: lines[i], spacing: mean })
+        segs.push({ strip: k, x: xc, top: lines[i], spacing: mean })
         i += 5
       } else i++
     }
@@ -180,13 +188,16 @@ function dropOverlapping(staves: Staff[]): Staff[] {
 }
 
 /**
- * Which end of the staves the clefs are on: +1 = left (upright page), -1 = right
- * (page upside down), 0 = undecided. Clefs and key signatures put far more non-staff-line
- * ink right after the staff start than there is before its end (usually a lone barline).
+ * Evidence for which end of the staves the clefs are on. Clefs and key signatures put far
+ * more non-staff-line ink right after the staff start than there usually is before its
+ * end (a barline, sometimes a courtesy time signature). Each staff votes for the side
+ * with clearly more ink; `ratio` is left/right ink over all staves.
  */
-export function clefSide(det: StaffDetection, width: number): { side: -1 | 0 | 1; ratio: number } {
+export function clefSide(det: StaffDetection, width: number): { left: number; right: number; ratio: number } {
   let left = 0
   let right = 0
+  let inkL = 0
+  let inkR = 0
   for (const s of det.staves) {
     const H = s.bottom - s.top
     const win = Math.round(1.5 * H)
@@ -200,9 +211,12 @@ export function clefSide(det: StaffDetection, width: number): { side: -1 | 0 | 1
       }
       return n
     }
-    left += count(Math.round(s.x0), Math.round(s.x0) + win)
-    right += count(Math.round(s.x1) - win, Math.round(s.x1))
+    const l = count(Math.round(s.x0), Math.round(s.x0) + win)
+    const r = count(Math.round(s.x1) - win, Math.round(s.x1))
+    inkL += l
+    inkR += r
+    if (l > r * 1.3) left++
+    else if (r > l * 1.3) right++
   }
-  const ratio = (left + 1) / (right + 1)
-  return { side: ratio > 1.3 ? 1 : ratio < 1 / 1.3 ? -1 : 0, ratio }
+  return { left, right, ratio: (inkL + 1) / (inkR + 1) }
 }

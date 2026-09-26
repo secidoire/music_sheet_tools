@@ -3,6 +3,7 @@
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import type { RasterPayload } from '../worker/protocol.ts'
+import { pageSizeCorrection } from '../pipeline/paper.ts'
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
@@ -29,7 +30,10 @@ const TILE = 4096
 /** Rasterises one page to 8-bit gray on a white background. The buffer is meant to be transferred to the worker. */
 export async function renderPage(doc: PDFDocumentProxy, pageNo: number, dpi: number): Promise<RasterPayload> {
   const page = await doc.getPage(pageNo)
-  const viewport = page.getViewport({ scale: dpi / 72 })
+  // Render at `dpi` of the real paper size, which may differ from the declared one.
+  const [x0, y0, x1, y1] = page.view
+  const k = pageSizeCorrection(((x1 - x0) / 72) * 25.4, ((y1 - y0) / 72) * 25.4)
+  const viewport = page.getViewport({ scale: (dpi / 72) * k })
   const width = Math.round(viewport.width)
   const height = Math.round(viewport.height)
   const gray = new Uint8Array(width * height)
