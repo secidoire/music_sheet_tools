@@ -58,6 +58,11 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       sources.set(req.pageKey, gray)
       return { analysis: analyzePage(cv, gray).analysis }
     }
+    case 'reanalyze': {
+      const src = sources.get(req.pageKey)
+      if (!src) throw new Error(`unknown page ${req.pageKey}`)
+      return { analysis: analyzePage(cv, src, ANALYSIS_DPI, req.rotation).analysis }
+    }
     case 'preview': {
       const src = sources.get(req.pageKey)
       if (!src) throw new Error(`unknown page ${req.pageKey}`)

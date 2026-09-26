@@ -1,5 +1,6 @@
 import type { CV, GrayImage } from './types.ts'
 import { matFromGray } from './image.ts'
+import type { Staff } from './staff.ts'
 
 export interface Box {
   x: number
@@ -15,9 +16,12 @@ export interface Box {
  * notes and text merge into blobs, then components are filtered:
  * - dust: blobs smaller than ~6x6mm are ignored
  * - scanner edges: thin, long blobs hugging the image border are ignored
- * Returns null when nothing remains (blank page).
+ *
+ * With `staves` (same coordinates as `img`) the music itself anchors the box and other
+ * blobs only join when they belong to it, see `keepBlob`. Without staves (title pages,
+ * text) every remaining blob counts. Returns null when nothing remains (blank page).
  */
-export function contentBox(cv: CV, img: GrayImage, dpi: number): Box | null {
+export function contentBox(cv: CV, img: GrayImage, dpi: number, staves: Staff[] = []): Box | null {
   const workDpi = 50
   const s = Math.min(1, workDpi / dpi)
   const mm = (dpi * s) / 25.4
@@ -40,20 +44,25 @@ export function contentBox(cv: CV, img: GrayImage, dpi: number): Box | null {
   const W = bin.cols
   const H = bin.rows
   const edge = Math.max(1, Math.round(1.5 * mm))
-  let x0 = Infinity
-  let y0 = Infinity
-  let x1 = -Infinity
-  let y1 = -Infinity
+  const blobs: Box[] = []
   for (let i = 1; i < n; i++) {
     const [x, y, w, h] = stats.data32S.subarray(i * 5, i * 5 + 4)
     if (w < 6 * mm && h < 6 * mm) continue
     const touches = x <= edge || y <= edge || x + w >= W - edge || y + h >= H - edge
     const thin = Math.min(w, h) < 6 * mm && Math.max(w, h) > 30 * mm
     if (touches && thin) continue
-    x0 = Math.min(x0, x)
-    y0 = Math.min(y0, y)
-    x1 = Math.max(x1, x + w)
-    y1 = Math.max(y1, y + h)
+    blobs.push({ x, y, width: w, height: h })
+  }
+  const kept = staves.length ? keepBlobs(blobs, staves.map((t) => ({ x0: t.x0 * s, x1: t.x1 * s, top: t.top * s, bottom: t.bottom * s })), mm) : blobs
+  let x0 = Infinity
+  let y0 = Infinity
+  let x1 = -Infinity
+  let y1 = -Infinity
+  for (const b of kept) {
+    x0 = Math.min(x0, b.x)
+    y0 = Math.min(y0, b.y)
+    x1 = Math.max(x1, b.x + b.width)
+    y1 = Math.max(y1, b.y + b.height)
   }
   ;[src, small, bin, paper, k, labels, stats, cents].forEach((m) => m.delete())
   if (x1 < 0) return null
@@ -68,4 +77,40 @@ export function contentBox(cv: CV, img: GrayImage, dpi: number): Box | null {
   b.width = Math.min(img.width, (x1 - shrink) / s) - b.x
   b.height = Math.min(img.height, (y1 - shrink) / s) - b.y
   return b
+}
+
+/**
+ * How far past the staff ends the music column reaches. Blobs are dilated by ~1mm, so a
+ * margin note starting 3mm or more beside the staves stays outside.
+ */
+const COLUMN_SLACK_MM = 2
+
+/** Gap below the last staff up to which footer lines (copyright, page number) are kept. */
+const FOOTER_GAP_MM = 15
+
+/**
+ * Selects the blobs that belong to the score, given staff boxes (all in work pixels):
+ * - the column of the music is the staves' horizontal span (plus COLUMN_SLACK_MM); a blob must
+ *   lie at least half inside it. This drops the neighbouring page's edge after a split,
+ *   binding shadows, stamps and notes in the side margins.
+ * - within that column everything from the top of the page down to the last staff is
+ *   kept: title, subtitle, composer, part name and tempo marks can sit far above the
+ *   first staff, and losing them is much worse than keeping a stray mark.
+ * - below the last staff, blobs are kept while each is within FOOTER_GAP_MM of what is
+ *   already kept (copyright lines, page numbers), so distant smudges are dropped.
+ */
+function keepBlobs(blobs: Box[], staves: { x0: number; x1: number; top: number; bottom: number }[], mm: number): Box[] {
+  const L = Math.min(...staves.map((t) => t.x0)) - COLUMN_SLACK_MM * mm
+  const R = Math.max(...staves.map((t) => t.x1)) + COLUMN_SLACK_MM * mm
+  const bottom = Math.max(...staves.map((t) => t.bottom))
+  const inColumn = blobs.filter((b) => Math.min(b.x + b.width, R) - Math.max(b.x, L) >= b.width * 0.5)
+  const kept = inColumn.filter((b) => b.y <= bottom)
+  let edge = Math.max(bottom, ...kept.map((b) => b.y + b.height))
+  const below = inColumn.filter((b) => b.y > bottom).sort((a, b) => a.y - b.y)
+  for (const b of below) {
+    if (b.y - edge > FOOTER_GAP_MM * mm) break
+    kept.push(b)
+    edge = Math.max(edge, b.y + b.height)
+  }
+  return kept
 }

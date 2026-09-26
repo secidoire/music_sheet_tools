@@ -1,9 +1,13 @@
 import { useRef, useState } from 'react'
+import type { Rotation } from '../pipeline/types.ts'
 
 interface Props {
+  /** Unrotated source image and its size. */
   url: string
   width: number
   height: number
+  /** Clockwise turn the page is shown with; split and guides are in the turned frame. */
+  rotation: Rotation
   split: boolean
   splitX: number
   /** Skew per part in degrees (positive = lines descend to the right). */
@@ -17,8 +21,11 @@ const GUIDE_ROWS = 14
  * Source page with the split line (draggable) and skew guides: thin lines drawn at the
  * detected angle. When the angle is right they run parallel to the staff lines.
  */
-export function SourceView({ url, width, height, split, splitX, angles, onSplitX }: Props) {
+export function SourceView({ url, width: srcW, height: srcH, rotation, split, splitX, angles, onSplitX }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  const sideways = rotation === 90 || rotation === 270
+  const width = sideways ? srcH : srcW
+  const height = sideways ? srcW : srcH
   const [drag, setDrag] = useState<number | null>(null)
   const x = drag ?? splitX
 
@@ -36,8 +43,13 @@ export function SourceView({ url, width, height, split, splitX, angles, onSplitX
     : [{ x0: 0, x1: width, angle: angles[0] ?? 0 }]
 
   return (
-    <div className="source-view" ref={ref}>
-      <img src={url} alt="処理前" draggable={false} />
+    <div className="source-view" ref={ref} style={{ aspectRatio: `${width} / ${height}` }}>
+      <img
+        src={url}
+        alt="処理前"
+        draggable={false}
+        style={{ width: `${(srcW / width) * 100}%`, transform: `translate(-50%, -50%) rotate(${rotation}deg)` }}
+      />
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden>
         {parts.map((p, i) =>
           Array.from({ length: GUIDE_ROWS }, (_, k) => {

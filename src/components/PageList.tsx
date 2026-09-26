@@ -11,7 +11,7 @@ export function PageList({ pages, selected, onSelect }: Props) {
     <ol className="page-list">
       {pages.map((p, i) => {
         const o = p.overrides
-        const edited = Object.keys(o).length > 0
+        const edited = Object.keys(o).length > 0 || (p.analysis !== undefined && p.analysis.rotation !== p.analysis.autoRotation)
         return (
           <li key={p.key}>
             <button type="button" className={i === selected ? 'selected' : ''} onClick={() => onSelect(i)} aria-current={i === selected}>

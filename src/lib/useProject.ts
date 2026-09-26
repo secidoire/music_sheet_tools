@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
-import type { GlobalSettings, PageAnalysis, PageOverrides } from '../pipeline/types.ts'
+import type { GlobalSettings, PageAnalysis, PageOverrides, Rotation } from '../pipeline/types.ts'
 import { DEFAULT_SETTINGS } from '../pipeline/defaults.ts'
 import { ANALYSIS_DPI, resolvePage } from '../pipeline/process.ts'
 import { ProcessorClient } from '../worker/client.ts'
-import { openPdf, rasterToJpegUrl, renderPage } from './pdf.ts'
+import { rasterToJpegUrl } from './pdf.ts'
+import { openSources, type Source } from './source.ts'
 
 export const PREVIEW_DPI = 100
 /** Export resolutions to fall back through when the browser can't allocate a canvas that large. */
@@ -24,6 +24,14 @@ export interface PageState {
   error?: string
 }
 
+/** Finished export, kept so it can be saved again with a fresh tap (see `saveFile`). */
+export interface ExportResult {
+  name: string
+  file: File
+  /** Object URL of the PDF as a download-only blob. */
+  url: string
+}
+
 export interface ExportProgress {
   done: number
   total: number
@@ -40,40 +48,47 @@ export function useProject() {
   const [loading, setLoading] = useState<{ done: number; total: number } | null>(null)
   const [exporting, setExporting] = useState<ExportProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [exported, setExported] = useState<ExportResult | null>(null)
   const [exportDpi, setExportDpi] = useState(600)
-  const docRef = useRef<PDFDocumentProxy | null>(null)
+  const docRef = useRef<Source | null>(null)
   const loadGen = useRef(0)
 
   const updatePage = useCallback((key: string, patch: Partial<PageState> | ((p: PageState) => Partial<PageState>)) => {
     setPages((ps) => ps.map((p) => (p.key === key ? { ...p, ...(typeof patch === 'function' ? patch(p) : patch) } : p)))
   }, [])
 
-  const load = useCallback(async (file: File) => {
+  /** Opens PDFs and/or images as one document (pages in file-name order). */
+  const load = useCallback(async (files: File[]) => {
     const gen = ++loadGen.current
     setError(null)
+    setExported((old) => {
+      if (old) URL.revokeObjectURL(old.url)
+      return null
+    })
     try {
       const c = getClient()
       await c.call({ type: 'reset' })
-      await docRef.current?.loadingTask.destroy()
+      await docRef.current?.destroy()
+      docRef.current = null
       setPages((old) => {
         for (const p of old) [p.sourceUrl, ...(p.previewUrls ?? [])].forEach((u) => u && URL.revokeObjectURL(u))
         return []
       })
-      const doc = await openPdf(await file.arrayBuffer())
+      const doc = await openSources(files)
       docRef.current = doc
-      setFileName(file.name)
+      setFileName(doc.name)
       setSelected(0)
-      const initial: PageState[] = Array.from({ length: doc.numPages }, (_, i) => ({
+      const initial: PageState[] = doc.pages.map((_, i) => ({
         key: `${gen}:${i + 1}`,
         pageNo: i + 1,
         overrides: {},
       }))
       setPages(initial)
-      setLoading({ done: 0, total: doc.numPages })
+      setLoading({ done: 0, total: doc.pages.length })
       for (const p of initial) {
         if (gen !== loadGen.current) return
         try {
-          const raster = await renderPage(doc, p.pageNo, ANALYSIS_DPI)
+          const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
           const sourceUrl = await rasterToJpegUrl(raster, 1600)
           const sourceSize = { width: raster.width, height: raster.height }
           const { analysis } = await c.call({ type: 'analyze', pageKey: p.key, raster }, [raster.gray])
@@ -82,11 +97,11 @@ export function useProject() {
         } catch (e) {
           updatePage(p.key, { error: String(e) })
         }
-        setLoading({ done: p.pageNo, total: doc.numPages })
+        setLoading({ done: p.pageNo, total: doc.pages.length })
       }
       setLoading(null)
     } catch (e) {
-      setError(`PDFを読み込めませんでした: ${e instanceof Error ? e.message : e}`)
+      setError(`ファイルを読み込めませんでした: ${e instanceof Error ? e.message : e}`)
       setLoading(null)
     }
   }, [updatePage])
@@ -125,6 +140,22 @@ export function useProject() {
     [updatePage],
   )
 
+  /**
+   * Turns a page (auto-detected orientation when `rotation` is undefined). Split and skew
+   * depend on the orientation, so the page is analysed again and its manual fixes dropped.
+   */
+  const rotatePage = useCallback(
+    async (key: string, rotation?: Rotation) => {
+      try {
+        const { analysis } = await getClient().call({ type: 'reanalyze', pageKey: key, rotation })
+        updatePage(key, { analysis, overrides: {} })
+      } catch (e) {
+        updatePage(key, { error: String(e) })
+      }
+    },
+    [updatePage],
+  )
+
   const exportPdf = useCallback(async () => {
     const doc = docRef.current
     if (!doc) return
@@ -138,7 +169,7 @@ export function useProject() {
         // Very large canvases fail on memory-constrained devices (e.g. iOS); retry at a lower resolution.
         for (const dpi of EXPORT_FALLBACK.filter((d) => d <= exportDpi)) {
           try {
-            const raster = await renderPage(doc, p.pageNo, dpi)
+            const raster = await doc.pages[p.pageNo - 1].render(dpi)
             await c.call({ type: 'exportPage', raster, page, outDpi: dpi }, [raster.gray])
             break
           } catch (e) {
@@ -149,8 +180,16 @@ export function useProject() {
         setExporting({ done: i + 1, total: pages.length })
       }
       const { pdf } = await c.call({ type: 'exportEnd' })
-      const base = (fileName ?? 'score').replace(/\.pdf$/i, '')
-      download(new Blob([pdf as Uint8Array<ArrayBuffer>], { type: 'application/pdf' }), `${base}_A4.pdf`)
+      const base = (fileName ?? 'score').replace(/ ほか\d+件$/, '').replace(/\.[a-z0-9]+$/i, '')
+      const name = `${base}_A4.pdf`
+      const bytes = pdf as Uint8Array<ArrayBuffer>
+      // octet-stream: with application/pdf, mobile browsers open a viewer instead of saving.
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }))
+      setExported((old) => {
+        if (old) URL.revokeObjectURL(old.url)
+        return { name, url, file: new File([bytes], name, { type: 'application/pdf' }) }
+      })
+      saveUrl(url, name)
     } catch (e) {
       setError(`書き出しに失敗しました: ${e instanceof Error ? e.message : e}`)
     } finally {
@@ -158,17 +197,25 @@ export function useProject() {
     }
   }, [pages, settings, fileName, exportDpi])
 
-  return { fileName, pages, settings, setSettings, selected, setSelected, loading, exporting, error, load, setOverrides, exportPdf, exportDpi, setExportDpi }
+  const dismissExported = useCallback(() => setExported(null), [])
+
+  return { fileName, pages, settings, setSettings, selected, setSelected, loading, exporting, exported, dismissExported, error, load, setOverrides, rotatePage, exportPdf, exportDpi, setExportDpi }
 }
 
 function sig(p: PageState, g: GlobalSettings): string {
   return p.analysis ? JSON.stringify(resolvePage(p.analysis, g, p.overrides)) : ''
 }
 
-function download(blob: Blob, name: string) {
+/**
+ * Starts a download of `url`. Browsers may ignore this when it runs long after the click
+ * that started the export (iOS Safari), which is why the result also stays on screen
+ * with its own download link.
+ */
+export function saveUrl(url: string, name: string) {
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
+  a.href = url
   a.download = name
+  document.body.append(a)
   a.click()
-  setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
+  a.remove()
 }

@@ -1,4 +1,4 @@
-import type { PageAnalysis, ResolvedPage } from '../pipeline/types.ts'
+import type { PageAnalysis, ResolvedPage, Rotation } from '../pipeline/types.ts'
 
 /** 8-bit gray pixels as rendered by pdf.js on the main thread; the buffer is transferred, not copied. */
 export interface RasterPayload {
@@ -13,6 +13,8 @@ export type WorkerRequest =
   | { type: 'reset' }
   /** Stores the page for later previews and runs the automatic detection. */
   | { type: 'analyze'; pageKey: string; raster: RasterPayload }
+  /** Re-runs the detection on a stored page, turned by `rotation` (auto-detected when omitted). */
+  | { type: 'reanalyze'; pageKey: string; rotation?: Rotation }
   /** Renders the corrected A4 sheet(s) of a stored page as JPEG blobs. */
   | { type: 'preview'; pageKey: string; page: ResolvedPage; outDpi: number }
   | { type: 'exportBegin' }
@@ -23,6 +25,7 @@ export interface WorkerResponses {
   init: { ok: true }
   reset: { ok: true }
   analyze: { analysis: PageAnalysis }
+  reanalyze: { analysis: PageAnalysis }
   preview: { sheets: Blob[] }
   exportBegin: { ok: true }
   exportPage: { sheets: number }
