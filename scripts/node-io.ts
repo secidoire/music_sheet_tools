@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { createCanvas } from '@napi-rs/canvas'
 import { getDocument, type PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { GrayImage } from '../src/pipeline/types.ts'
+import { pageSizeCorrection } from '../src/pipeline/paper.ts'
 
 export function listPdfs(dir: string): string[] {
   return readdirSync(dir).flatMap((f) => {
@@ -24,7 +25,10 @@ export async function openPdf(path: string): Promise<PDFDocumentProxy> {
 
 export async function renderPageRGBA(doc: PDFDocumentProxy, pageNo: number, dpi: number) {
   const page = await doc.getPage(pageNo)
-  const viewport = page.getViewport({ scale: dpi / 72 })
+  // Render at `dpi` of the real paper size, which may differ from the declared one.
+  const [x0, y0, x1, y1] = page.view
+  const k = pageSizeCorrection(((x1 - x0) / 72) * 25.4, ((y1 - y0) / 72) * 25.4)
+  const viewport = page.getViewport({ scale: (dpi / 72) * k })
   const canvas = createCanvas(Math.round(viewport.width), Math.round(viewport.height))
   const ctx = canvas.getContext('2d')
   ctx.fillStyle = '#fff'

@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import type { CV, GrayImage } from '../pipeline/types.ts'
 import { resizeGray } from '../pipeline/image.ts'
-import { analyzePage, ANALYSIS_DPI, renderPage } from '../pipeline/process.ts'
+import { analyzePage, ANALYSIS_DPI, renderPage, staffDpiScale } from '../pipeline/process.ts'
 import type { RasterPayload, RequestMessage, ResponseMessage, WorkerRequest, WorkerResponses } from './protocol.ts'
 import { PdfBuilder } from './pdf-builder.ts'
 
@@ -22,8 +22,8 @@ function loadCv(): Promise<CV> {
   return cvPromise
 }
 
-/** Gray sources at ANALYSIS_DPI, kept for re-rendering previews when settings change. */
-const sources = new Map<string, GrayImage>()
+/** Gray sources at a real ANALYSIS_DPI, kept for re-rendering previews when settings change. */
+const sources = new Map<string, { gray: GrayImage; dpiScale: number }>()
 let builder: PdfBuilder | null = null
 
 function toGray(r: RasterPayload): GrayImage {
@@ -54,19 +54,21 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       return { ok: true }
     case 'analyze': {
       let gray = toGray(req.raster)
-      if (req.raster.dpi !== ANALYSIS_DPI) gray = resizeGray(cv, gray, ANALYSIS_DPI / req.raster.dpi)
-      sources.set(req.pageKey, gray)
-      return { analysis: analyzePage(cv, gray).analysis }
+      const dpiScale = staffDpiScale(cv, gray, req.raster.dpi)
+      const real = req.raster.dpi * dpiScale
+      if (Math.abs(real - ANALYSIS_DPI) > 0.5) gray = resizeGray(cv, gray, ANALYSIS_DPI / real)
+      sources.set(req.pageKey, { gray, dpiScale })
+      return { analysis: analyzePage(cv, gray, ANALYSIS_DPI, undefined, dpiScale).analysis }
     }
     case 'reanalyze': {
       const src = sources.get(req.pageKey)
       if (!src) throw new Error(`unknown page ${req.pageKey}`)
-      return { analysis: analyzePage(cv, src, ANALYSIS_DPI, req.rotation).analysis }
+      return { analysis: analyzePage(cv, src.gray, ANALYSIS_DPI, req.rotation, src.dpiScale).analysis }
     }
     case 'preview': {
       const src = sources.get(req.pageKey)
       if (!src) throw new Error(`unknown page ${req.pageKey}`)
-      const sheets = renderPage(cv, src, ANALYSIS_DPI, req.page, req.outDpi)
+      const sheets = renderPage(cv, src.gray, ANALYSIS_DPI, req.page, req.outDpi)
       return { sheets: await Promise.all(sheets.map((s) => encodeJpeg(s.image))) }
     }
     case 'exportBegin':
@@ -74,7 +76,7 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       return { ok: true }
     case 'exportPage': {
       if (!builder) throw new Error('export not started')
-      const sheets = renderPage(cv, toGray(req.raster), req.raster.dpi, req.page, req.outDpi)
+      const sheets = renderPage(cv, toGray(req.raster), req.raster.dpi * req.page.dpiScale, req.page, req.outDpi)
       for (const s of sheets) builder.addGrayPage(s.image, req.page.whiten.enabled && req.page.whiten.mode === 'adaptive')
       return { sheets: sheets.length }
     }

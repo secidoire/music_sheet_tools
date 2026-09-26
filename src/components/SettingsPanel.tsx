@@ -43,6 +43,11 @@ export function SettingsPanel({ settings: s, onChange, exportDpi, onExportDpi }:
               />
               <output>{s.whiten.strength}</output>
             </label>
+            {s.whiten.mode === 'levels' && (
+              <Switch checked={s.whiten.sharpen} onChange={(v) => set('whiten', { ...s.whiten, sharpen: v })} title="解像度の低いスキャンを拡大したときのぼやけを抑えます">
+                輪郭をくっきり
+              </Switch>
+            )}
           </div>
         )}
       </div>

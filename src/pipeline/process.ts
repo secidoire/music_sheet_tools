@@ -3,12 +3,33 @@ import { A4_MM, MM_PER_INCH } from './types.ts'
 import { crop, grayFromMat, inkMask, matFromGray, resizeGray } from './image.ts'
 import { detectSplit, type SplitResult } from './split.ts'
 import { detectSkew, horizontalStrokes, type SkewResult } from './deskew.ts'
-import { whiten } from './whiten.ts'
+import { crispen, whiten } from './whiten.ts'
 import { contentBox, type Box } from './trim.ts'
-import { clefSide, detectStaves, type Staff } from './staff.ts'
+import { clefSide, detectStaves, estimateStaffSpace, type Staff } from './staff.ts'
 
 /** Resolution the automatic detection runs at. Results are resolution-independent. */
 export const ANALYSIS_DPI = 150
+
+/**
+ * Staff-line spacing (centre to centre) every page is taken to have, in mm. Typical of
+ * printed parts (the samples measure 1.3–1.9mm). It sets the scale all millimetre
+ * tolerances are read in and how far `maxUpscale` lets small content grow.
+ */
+export const NOMINAL_STAFF_SPACING_MM = 1.6
+
+/**
+ * How much finer `gray` really is than `dpi` claims, judged by its staves rather than by
+ * the page size it came with: that size is guessed for images (a photo, a crop) and can be
+ * wrong in PDFs. With the returned factor k, `dpi * k` is the resolution at which the staff
+ * spacing measures NOMINAL_STAFF_SPACING_MM. Returns 1 when no clear staves are found
+ * (title pages, text), so those keep the page-size guess.
+ */
+export function staffDpiScale(cv: CV, gray: GrayImage, dpi: number): number {
+  const e = estimateStaffSpace(cv, gray)
+  if (!e || e.confidence < 0.5) return 1
+  const k = e.spacing / ((NOMINAL_STAFF_SPACING_MM / MM_PER_INCH) * dpi)
+  return k >= 0.2 && k <= 5 ? k : 1
+}
 
 export interface AnalysisDebug {
   /** The page as analysed, i.e. after `rotation`. */
@@ -22,16 +43,19 @@ export interface AnalysisDebug {
  * Detects orientation, spread split position and skew. `gray` should be rendered at
  * ANALYSIS_DPI (other resolutions work, `dpi` only scales the tolerances).
  * Pass `rotation` to skip the orientation detection and analyse the page turned that way.
+ * `dpiScale` is only recorded in the result (see `staffDpiScale`); `dpi` must already be real.
  */
 export function analyzePage(
-  cv: CV, source: GrayImage, dpi = ANALYSIS_DPI, rotation?: Rotation,
+  cv: CV, source: GrayImage, dpi = ANALYSIS_DPI, rotation?: Rotation, dpiScale = 1,
 ): { analysis: PageAnalysis; debug: AnalysisDebug } {
   const autoRotation = detectOrientation(cv, source, dpi)
   const rot = rotation ?? autoRotation
   const gray = rotateQuarter(cv, source, rot)
   const { width: w, height: h } = gray
   const ink = inkMask(cv, gray, (4 / MM_PER_INCH) * dpi)
-  const isSpread = w / h > 1.15
+  // Landscape alone is not enough: a wide crop of a few systems is landscape too, and its
+  // staves run straight through the middle where a spread has its gutter.
+  const isSpread = w / h > 1.15 && !detectStaves(cv, gray, dpi).staves.some((s) => s.x0 < w * 0.4 && s.x1 > w * 0.6)
   const split = isSpread ? detectSplit(gray, ink, dpi) : null
   const strokes = horizontalStrokes(cv, ink, w, h, dpi)
   // Skip a strip around the gutter and the page edges: shadows and scan borders are not staff lines.
@@ -49,6 +73,7 @@ export function analyzePage(
     analysis: {
       rotation: rot,
       autoRotation,
+      dpiScale,
       isSpread,
       splitX: split?.x ?? 0.5,
       splitMethod: split?.method ?? 'center',
@@ -65,8 +90,8 @@ export function analyzePage(
  * Staff lines dominate the long straight strokes of a score, so a page whose vertical
  * strokes far outnumber its horizontal ones is lying on its side. Which way up it goes is
  * decided by the clefs: they sit at the start (left end) of every staff. A page whose
- * staves already run horizontally is only turned upside down when the clefs clearly sit
- * on the right, since a wrong flip is far worse than a missed one.
+ * staves already run horizontally is only turned upside down when most staves clearly
+ * have their clef ink on the right, since a wrong flip is far worse than a missed one.
  */
 export function detectOrientation(cv: CV, gray: GrayImage, dpi: number): Rotation {
   const strokeCount = (g: GrayImage) => {
@@ -75,14 +100,16 @@ export function detectOrientation(cv: CV, gray: GrayImage, dpi: number): Rotatio
   }
   const cw = rotateQuarter(cv, gray, 90)
   if (strokeCount(gray) >= 0.5 * strokeCount(cw)) {
-    const up = detectStaves(cv, gray, dpi)
-    const c = clefSide(up, gray.width)
-    return up.staves.length >= 3 && c.ratio < 1 / 1.5 ? 180 : 0
+    const c = clefSide(detectStaves(cv, gray, dpi), gray.width)
+    const flipped = c.right >= 3 && c.right >= 3 * c.left && c.ratio < 1 / 1.5
+    return flipped ? 180 : 0
   }
   const a = clefSide(detectStaves(cv, cw, dpi), cw.width)
   const ccw = rotateQuarter(cv, gray, 270)
   const b = clefSide(detectStaves(cv, ccw, dpi), ccw.width)
-  return b.ratio > a.ratio ? 270 : 90
+  const va = a.left - a.right
+  const vb = b.left - b.right
+  return vb > va || (vb === va && b.ratio > a.ratio) ? 270 : 90
 }
 
 /** Lossless clockwise rotation by a multiple of 90°. */
@@ -103,6 +130,7 @@ export function resolvePage(a: PageAnalysis, g: GlobalSettings, o: PageOverrides
   return {
     bypass: o.bypass ?? false,
     rotation: a.rotation,
+    dpiScale: a.dpiScale,
     split,
     splitX: o.splitX ?? a.splitX,
     angles: auto.map((v, i) => o.angles?.[i] ?? v),
@@ -145,7 +173,8 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
   } else {
     parts.push(gray)
   }
-  return parts.map((part, i) => {
+  const sheets: RenderedSheet[] = []
+  parts.forEach((part, i) => {
     const img = whiten(cv, part, p.whiten, dpi)
     const angle = p.angles[i] ?? 0
     let box: Box | null = null
@@ -161,8 +190,14 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
         samples: t.samples.map((q) => ({ x: q.x / s, top: q.top / s })),
       }))
     }
-    return { image: layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale), content: box, staves }
+    // One side of a spread left blank (the back of a cover, an empty last page): no sheet for it.
+    if (p.trim && p.split && !box) return
+    const image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale)
+    // After the one resampling step, so edges are sharpened at the output resolution.
+    if (p.whiten.enabled && p.whiten.mode === 'levels' && p.whiten.sharpen) crispen(image)
+    sheets.push({ image, content: box, staves })
   })
+  return sheets
 }
 
 /** Canvas size of `img` rotated by `deg` with nothing clipped. */

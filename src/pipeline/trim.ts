@@ -15,7 +15,8 @@ export interface Box {
  * Works on a ~50dpi copy: ink is found by adaptive threshold, dilated (~2mm) so that
  * notes and text merge into blobs, then components are filtered:
  * - dust: blobs smaller than ~6x6mm are ignored
- * - scanner edges: thin, long blobs hugging the image border are ignored
+ * - scanner edges: thin, long blobs hugging the image border are ignored, and so are
+ *   bare lines or line frames spanning half the page anywhere (paper edges, binding)
  *
  * With `staves` (same coordinates as `img`) the music itself anchors the box and other
  * blobs only join when they belong to it, see `keepBlob`. Without staves (title pages,
@@ -44,14 +45,20 @@ export function contentBox(cv: CV, img: GrayImage, dpi: number, staves: Staff[] 
   const W = bin.cols
   const H = bin.rows
   const edge = Math.max(1, Math.round(1.5 * mm))
-  const blobs: Box[] = []
+  const blobs: Blob[] = []
   for (let i = 1; i < n; i++) {
-    const [x, y, w, h] = stats.data32S.subarray(i * 5, i * 5 + 4)
+    const [x, y, w, h, area] = stats.data32S.subarray(i * 5, i * 5 + 5)
     if (w < 6 * mm && h < 6 * mm) continue
     const touches = x <= edge || y <= edge || x + w >= W - edge || y + h >= H - edge
     const thin = Math.min(w, h) < 6 * mm && Math.max(w, h) > 30 * mm
     if (touches && thin) continue
-    blobs.push({ x, y, width: w, height: h })
+    // Bare lines across most of the page are paper or scanner edges (or the binding),
+    // wherever they lie, alone or joined into a frame; printed content that large is a
+    // dense blob, while an edge frame is little more than its outline.
+    // (Its mean stroke width area / (w + h) stays within ~1.5 line widths for a line, an L
+    // or a U; a ragged edge with specks along it still fills only a sliver of its box.)
+    if ((w > W * 0.5 || h > H * 0.5) && (area / (w + h) < 4 * mm || area < w * h * 0.08)) continue
+    blobs.push({ x, y, width: w, height: h, area })
   }
   const kept = staves.length ? keepBlobs(blobs, staves.map((t) => ({ x0: t.x0 * s, x1: t.x1 * s, top: t.top * s, bottom: t.bottom * s })), mm) : blobs
   let x0 = Infinity
@@ -85,11 +92,17 @@ export function contentBox(cv: CV, img: GrayImage, dpi: number, staves: Staff[] 
  */
 const COLUMN_SLACK_MM = 2
 
+interface Blob extends Box {
+  /** Pixel count of the component. */
+  area: number
+}
+
 /** Gap below the last staff up to which footer lines (copyright, page number) are kept. */
 const FOOTER_GAP_MM = 15
 
 /**
  * Selects the blobs that belong to the score, given staff boxes (all in work pixels):
+ * - a sparse blob enclosing every staff is the sheet's outline, not content.
  * - the column of the music is the staves' horizontal span (plus COLUMN_SLACK_MM); a blob must
  *   lie at least half inside it. This drops the neighbouring page's edge after a split,
  *   binding shadows, stamps and notes in the side margins.
@@ -99,11 +112,16 @@ const FOOTER_GAP_MM = 15
  * - below the last staff, blobs are kept while each is within FOOTER_GAP_MM of what is
  *   already kept (copyright lines, page numbers), so distant smudges are dropped.
  */
-function keepBlobs(blobs: Box[], staves: { x0: number; x1: number; top: number; bottom: number }[], mm: number): Box[] {
+function keepBlobs(blobs: Blob[], staves: { x0: number; x1: number; top: number; bottom: number }[], mm: number): Box[] {
   const L = Math.min(...staves.map((t) => t.x0)) - COLUMN_SLACK_MM * mm
   const R = Math.max(...staves.map((t) => t.x1)) + COLUMN_SLACK_MM * mm
+  const top = Math.min(...staves.map((t) => t.top))
   const bottom = Math.max(...staves.map((t) => t.bottom))
-  const inColumn = blobs.filter((b) => Math.min(b.x + b.width, R) - Math.max(b.x, L) >= b.width * 0.5)
+  // The edge of a photographed sheet (paper against the desk, often with a soft shadow)
+  // becomes a ring around all the music; real content that encloses every staff is dense.
+  const frame = (b: Blob) =>
+    b.x <= L && b.y <= top && b.x + b.width >= R && b.y + b.height >= bottom && b.area < b.width * b.height * 0.2
+  const inColumn = blobs.filter((b) => !frame(b) && Math.min(b.x + b.width, R) - Math.max(b.x, L) >= b.width * 0.5)
   const kept = inColumn.filter((b) => b.y <= bottom)
   let edge = Math.max(bottom, ...kept.map((b) => b.y + b.height))
   const below = inColumn.filter((b) => b.y > bottom).sort((a, b) => a.y - b.y)

@@ -68,3 +68,25 @@ function adaptive(cv: CV, img: GrayImage, strength: number, dpi: number): GrayIm
   dst.delete()
   return out
 }
+
+/**
+ * Steepens edges of an already resampled page, in place. Scans are often 150–200dpi and
+ * enlarging them to the export resolution turns every edge into a soft ramp several
+ * pixels wide, which reads as blur. A sigmoid tone curve around the middle grey pulls
+ * each ramp back to a narrow one at the new resolution — sharp but still anti-aliased —
+ * and darkens thin grey staff lines on the way. Paper stays white and solid ink black.
+ */
+export function crispen(img: GrayImage): void {
+  const lut = new Uint8Array(256)
+  for (let v = 0; v < 256; v++) lut[v] = Math.round(255 / (1 + Math.exp(-(v - CRISP_CENTRE) / CRISP_WIDTH)))
+  // Stretch so that 0 and 255 map to themselves.
+  const lo = lut[0]
+  const hi = lut[255]
+  for (let v = 0; v < 256; v++) lut[v] = Math.round(((lut[v] - lo) * 255) / (hi - lo))
+  const d = img.data
+  for (let i = 0; i < d.length; i++) d[i] = lut[d[i]]
+}
+
+/** Grey level that becomes the edge, and how many levels the transition spans (smaller = harder). */
+const CRISP_CENTRE = 175
+const CRISP_WIDTH = 14

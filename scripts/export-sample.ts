@@ -7,7 +7,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { listPdfs, openPdf, renderPageRGBA, rgbaToGray, saveImage } from './node-io.ts'
 import { loadCvNode } from './node-cv.ts'
-import { analyzePage, ANALYSIS_DPI, renderPage, resolvePage } from '../src/pipeline/process.ts'
+import { analyzePage, ANALYSIS_DPI, renderPage, resolvePage, staffDpiScale } from '../src/pipeline/process.ts'
 import { resizeGray, crop } from '../src/pipeline/image.ts'
 import { DEFAULT_SETTINGS } from '../src/pipeline/defaults.ts'
 import { PdfBuilder } from '../src/worker/pdf-builder.ts'
@@ -23,8 +23,9 @@ for (let p = 1; p <= doc.numPages; p++) {
   const t0 = performance.now()
   const full = rgbaToGray(await renderPageRGBA(doc, p, dpi))
   const t1 = performance.now()
-  const { analysis } = analyzePage(cv, resizeGray(cv, full, ANALYSIS_DPI / dpi))
-  const sheets = renderPage(cv, full, dpi, resolvePage(analysis, DEFAULT_SETTINGS), dpi)
+  const dpiScale = staffDpiScale(cv, full, dpi)
+  const { analysis } = analyzePage(cv, resizeGray(cv, full, ANALYSIS_DPI / (dpi * dpiScale)), ANALYSIS_DPI, undefined, dpiScale)
+  const sheets = renderPage(cv, full, dpi * dpiScale, resolvePage(analysis, DEFAULT_SETTINGS), dpi)
   for (const s of sheets) builder.addGrayPage(s.image, false)
   if (p === 1) {
     const s = sheets[0].image
