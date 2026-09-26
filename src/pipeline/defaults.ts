@@ -1,7 +1,7 @@
 import type { GlobalSettings } from './types.ts'
 
 export const DEFAULT_SETTINGS: GlobalSettings = {
-  whiten: { enabled: true, mode: 'levels', strength: 50 },
+  whiten: { enabled: true, mode: 'levels', strength: 50, sharpen: true },
   trim: true,
   marginMm: 10,
   vAlign: 'top',

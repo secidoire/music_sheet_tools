@@ -3,7 +3,7 @@ import { A4_MM, MM_PER_INCH } from './types.ts'
 import { crop, grayFromMat, inkMask, matFromGray, resizeGray } from './image.ts'
 import { detectSplit, type SplitResult } from './split.ts'
 import { detectSkew, horizontalStrokes, type SkewResult } from './deskew.ts'
-import { whiten } from './whiten.ts'
+import { crispen, whiten } from './whiten.ts'
 import { contentBox, type Box } from './trim.ts'
 import { clefSide, detectStaves, estimateStaffSpace, type Staff } from './staff.ts'
 
@@ -192,7 +192,10 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
     }
     // One side of a spread left blank (the back of a cover, an empty last page): no sheet for it.
     if (p.trim && p.split && !box) return
-    sheets.push({ image: layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale), content: box, staves })
+    const image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale)
+    // After the one resampling step, so edges are sharpened at the output resolution.
+    if (p.whiten.enabled && p.whiten.mode === 'levels' && p.whiten.sharpen) crispen(image)
+    sheets.push({ image, content: box, staves })
   })
   return sheets
 }

@@ -45,6 +45,8 @@ export interface WhitenSettings {
   mode: WhitenMode
   /** 0..100 */
   strength: number
+  /** `levels` only: steepen edges after resampling (see `crispen`). */
+  sharpen: boolean
 }
 
 /** Settings that apply to every page unless overridden. */
