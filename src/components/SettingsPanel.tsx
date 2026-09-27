@@ -12,17 +12,15 @@ interface Props {
 export function SettingsPanel({ settings: s, onChange, exportDpi, onExportDpi }: Props) {
   const set = <K extends keyof GlobalSettings>(k: K, v: GlobalSettings[K]) => onChange({ ...s, [k]: v })
   return (
-    <section className="panel">
-      <h2 className="panel-title">
-        全ページ共通 <span className="panel-scope">すべてのページに適用</span>
-      </h2>
+    <section className="section">
+      <h2>全ページ</h2>
 
-      <div className="group">
+      <div className="item">
         <Switch checked={s.whiten.enabled} onChange={(v) => set('whiten', { ...s.whiten, enabled: v })}>
           背景の白飛ばし
         </Switch>
         {s.whiten.enabled && (
-          <div className="group-body">
+          <>
             <Segmented<WhitenMode>
               label="白飛ばしの方式"
               value={s.whiten.mode}
@@ -48,45 +46,38 @@ export function SettingsPanel({ settings: s, onChange, exportDpi, onExportDpi }:
                 輪郭をくっきり
               </Switch>
             )}
-          </div>
+          </>
         )}
       </div>
 
-      <div className="group">
+      <div className="item">
         <Switch checked={s.trim} onChange={(v) => set('trim', v)}>
           余白トリミング
         </Switch>
-        <div className="group-body">
-          <label className="field">
-            <span>余白</span>
-            <input type="number" min={0} max={40} step={1} value={s.marginMm} onChange={(e) => set('marginMm', Math.max(0, Math.min(40, Number(e.target.value))))} />
-            <span className="unit">mm</span>
-          </label>
-          <Segmented<GlobalSettings['vAlign']>
-            label="縦位置"
-            value={s.vAlign}
-            onChange={(v) => set('vAlign', v)}
-            options={[
-              { value: 'top', label: '上揃え' },
-              { value: 'center', label: '上下中央' },
-            ]}
-          />
-        </div>
+        <label className="field">
+          <span>余白</span>
+          <input type="number" min={0} max={40} step={1} value={s.marginMm} onChange={(e) => set('marginMm', Math.max(0, Math.min(40, Number(e.target.value))))} />
+          <span className="unit">mm</span>
+        </label>
+        <Segmented<GlobalSettings['vAlign']>
+          label="縦位置"
+          value={s.vAlign}
+          onChange={(v) => set('vAlign', v)}
+          options={[
+            { value: 'top', label: '上揃え' },
+            { value: 'center', label: '上下中央' },
+          ]}
+        />
       </div>
 
-      <div className="group">
-        <span className="group-label">書き出し画質</span>
+      <div className="item">
+        <span className="item-label">解像度</span>
         <Segmented<number>
           label="書き出し解像度"
           value={exportDpi}
           onChange={onExportDpi}
-          options={[
-            { value: 600, label: '高画質' },
-            { value: 400, label: '標準' },
-            { value: 300, label: '軽量' },
-          ]}
+          options={[600, 400, 300].map((d) => ({ value: d, label: `${d}dpi` }))}
         />
-        <p className="hint">{exportDpi}dpi で書き出します</p>
       </div>
     </section>
   )

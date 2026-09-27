@@ -3,7 +3,7 @@ import { useProject, type ExportResult } from './lib/useProject.ts'
 import { PageControls, PageStage } from './components/PageEditor.tsx'
 import { PageList } from './components/PageList.tsx'
 import { SettingsPanel } from './components/SettingsPanel.tsx'
-import { Icon, StaffMark } from './components/ui.tsx'
+import { Icon } from './components/ui.tsx'
 import { isImage, isPdf } from './lib/source.ts'
 
 export default function App() {
@@ -32,8 +32,7 @@ export default function App() {
 
   const exportButton = (
     <button type="button" className="primary export-button" disabled={!p.pages.length || busy} onClick={() => void p.exportPdf()}>
-      <Icon name="download" />
-      {p.exporting ? `書き出し中 ${p.exporting.done}/${p.exporting.total}` : 'A4 PDFを書き出す'}
+      {p.exporting ? `書き出し中 ${p.exporting.done}/${p.exporting.total}` : 'PDFを書き出す'}
     </button>
   )
   const progress = p.loading ?? p.exporting
@@ -65,12 +64,9 @@ export default function App() {
       />
 
       <header className="topbar">
-        <div className="brand">
-          <StaffMark />
-          <h1>楽譜PDF補正</h1>
-        </div>
+        <h1>楽譜PDF補正</h1>
         {p.fileName && (
-          <span className="file-chip" title={p.fileName}>
+          <span className="file-name" title={p.fileName}>
             {p.fileName}
             <span className="file-count">{p.loading ? `解析中 ${p.loading.done}/${p.loading.total}` : `${p.pages.length}ページ`}</span>
           </span>
@@ -78,11 +74,10 @@ export default function App() {
         <div className="spacer" />
         {p.pages.length > 0 && (
           <>
-            <button type="button" className="ghost" onClick={pickFiles} aria-label="別のファイルを開く">
-              <Icon name="open" />
-              <span className="label-wide">別のファイルを開く</span>
+            <button type="button" onClick={pickFiles}>
+              開く
             </button>
-            <div className="topbar-export">{exportButton}</div>
+            <span className="topbar-export">{exportButton}</span>
           </>
         )}
         {progress && (
@@ -101,25 +96,19 @@ export default function App() {
 
       {p.pages.length === 0 ? (
         <main className="welcome">
-          <div className="welcome-card">
-            <WelcomeStaff />
-            <h2>スキャンした楽譜を、きれいなA4に。</h2>
-            <p className="welcome-lead">見開きの分割・傾き補正・背景の白飛ばし・余白の調整を自動で行います。</p>
-            <button type="button" className="primary big" onClick={pickFiles}>
-              <Icon name="open" />
-              PDF・画像を選ぶ
-            </button>
-            <p className="hint">またはここにドラッグ&ドロップ(複数の画像はファイル名順に1冊にまとめます)</p>
-            <ol className="steps">
-              <li><b>1</b>読み込む</li>
-              <li><b>2</b>確認・微調整</li>
-              <li><b>3</b>A4 PDFで保存</li>
-            </ol>
-            <p className="privacy">
-              <Icon name="lock" />
-              処理はすべてブラウザ内。ファイルはどこにも送信されません。
-            </p>
-          </div>
+          <p className="welcome-lead">
+            スキャンした楽譜を、見開きの分割・傾き補正・背景の白飛ばし・余白の調整をして
+            <br />
+            A4のPDFにします。
+          </p>
+          <button type="button" className="primary" onClick={pickFiles}>
+            PDF・画像を選ぶ
+          </button>
+          <p className="welcome-note">
+            ドラッグ&ドロップでも開けます。複数の画像はファイル名順に1つのPDFになります。
+            <br />
+            処理はブラウザ内で完結し、ファイルは送信されません。
+          </p>
         </main>
       ) : (
         <main className="workspace">
@@ -144,32 +133,8 @@ export default function App() {
         </main>
       )}
 
-      {dragOver && (
-        <div className="drop-overlay" aria-hidden>
-          <p>ドロップして読み込む</p>
-        </div>
-      )}
+      {dragOver && <div className="drop-overlay" aria-hidden />}
     </div>
-  )
-}
-
-/** Staff lines drawn in, then a short phrase of notes. */
-function WelcomeStaff() {
-  const notes = [
-    [70, 26], [110, 21], [150, 16], [190, 21], [236, 11], [276, 16],
-  ]
-  return (
-    <svg className="welcome-staff" viewBox="0 0 340 56" aria-hidden>
-      {[0, 1, 2, 3, 4].map((i) => (
-        <line key={i} x1="10" x2="330" y1={8 + i * 10} y2={8 + i * 10} style={{ animationDelay: `${i * 0.06}s` }} />
-      ))}
-      {notes.map(([x, y], i) => (
-        <g key={i} className="note" style={{ animationDelay: `${0.5 + i * 0.09}s` }}>
-          <ellipse cx={x} cy={y} rx="5.4" ry="4" transform={`rotate(-20 ${x} ${y})`} />
-          <line x1={x + 4.8} x2={x + 4.8} y1={y - 1} y2={y - 26} />
-        </g>
-      ))}
-    </svg>
   )
 }
 
@@ -180,21 +145,16 @@ function WelcomeStaff() {
 function ExportedNotice({ result, onClose }: { result: ExportResult; onClose: () => void }) {
   const canShare = typeof navigator.canShare === 'function' && navigator.canShare({ files: [result.file] })
   return (
-    <div className="notice success" role="status">
-      <Icon name="check" />
-      <span className="notice-text">
-        書き出しました <b>{result.name}</b>
-      </span>
-      <a className="button primary" href={result.url} download={result.name}>
-        <Icon name="download" />
-        ダウンロード
-      </a>
+    <div className="notice" role="status">
+      <span className="notice-text">{result.name}</span>
       {canShare && (
         <button type="button" onClick={() => void navigator.share({ files: [result.file] }).catch(() => {})}>
-          <Icon name="share" />
-          共有・保存
+          共有
         </button>
       )}
+      <a className="button primary" href={result.url} download={result.name}>
+        ダウンロード
+      </a>
       <button type="button" className="icon-button" onClick={onClose} aria-label="閉じる">
         <Icon name="close" />
       </button>
