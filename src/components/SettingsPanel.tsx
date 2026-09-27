@@ -24,8 +24,8 @@ export function SettingsPanel({ settings: s, onChange }: Props) {
               value={s.whiten.mode}
               onChange={(v) => set('whiten', { ...s.whiten, mode: v })}
               options={[
-                { value: 'levels', label: 'グレー' },
                 { value: 'adaptive', label: '白黒' },
+                { value: 'levels', label: 'グレー' },
               ]}
             />
             <label className="field">
