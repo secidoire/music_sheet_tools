@@ -103,7 +103,10 @@ export function Stage({ page, resolved: r, index, count, onSelect, onRotate, onT
             settle={settle}
             onSplitX={onSplitX}
           />
-        ) : null}
+        ) : (
+          // Same frame as the empty state's drop area, so nothing jumps while the page renders.
+          <div className="sheet-slot" aria-hidden />
+        )}
       </div>
     </section>
   )

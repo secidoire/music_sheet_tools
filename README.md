@@ -10,6 +10,7 @@
 - PDF・画像(JPG/PNG など、ブラウザが読める形式)をドラッグ&ドロップ(または「ファイルを選択」)で読み込み。
   複数ファイルはファイル名順(数字は数値順)に1つの文書としてまとめる。
   写真の EXIF の向きは反映する
+- 空の画面の「サンプルで試す」: 同梱の傾いた楽譜画像(`public/sample.jpg`)を通常のファイルと同じ流れで読み込む。画像は `node scripts/make-sample.mjs` で描いた合成画像(著作物を含まない)
 - 大きさの推定: 画像の解像度や PDF のページサイズは当てにならない(写真・切り抜き・スキャナ設定の誤り)ため、
   五線の間隔(縦方向の黒と白の連続の長さの最頻値)を測り、どのページも五線の間隔 1.6mm とみなして処理する。
   ミリ単位の検出のしきい値と、短いページを拡大しすぎない上限(出力の五線の間隔で 2.0mm まで)はこの尺度で決まる。
@@ -36,7 +37,7 @@
 | `src/worker/` | 処理用 Web Worker(OpenCV.js、pdf-lib による PDF 組み立て) |
 | `src/lib/` | pdf.js によるラスタライズ(メインスレッド、タイル分割)、状態管理 |
 | `src/components/` | UI |
-| `scripts/` | UI なしの検証スクリプト |
+| `scripts/` | UI なしの検証スクリプト、サンプル画像の生成(`make-sample.mjs`) |
 
 OpenCV.js と pdf.js の wasm/cmaps は `npm run vendor`(dev/build 前に自動実行)で `public/vendor/` にコピーされ、
 `vite.config.ts` の `base`(`/music_sheet_tools/`)配下から読み込まれる。

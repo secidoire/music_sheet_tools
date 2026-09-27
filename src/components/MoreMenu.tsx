@@ -41,7 +41,6 @@ export function MoreMenu({ bypass, onBypass, onResetPage, settings, onSettings }
             )}
           </section>
           <SettingsPanel settings={settings} onChange={onSettings} />
-          <p className="menu-note">ファイルはサーバーに送信されず、すべてブラウザ内で処理されます。</p>
         </div>
       )}
     </Popover>
