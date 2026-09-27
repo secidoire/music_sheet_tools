@@ -54,7 +54,7 @@ async function decode(f: File): Promise<ImageBitmap> {
     // Photos carry their rotation in EXIF; apply it like every image viewer does.
     return await createImageBitmap(f, { imageOrientation: 'from-image' })
   } catch {
-    throw new Error(`${f.name}: このブラウザでは読み込めない画像形式です`)
+    throw new Error(`${f.name} はこのブラウザでは開けない形式です`)
   }
 }
 

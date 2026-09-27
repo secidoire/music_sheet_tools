@@ -1,3 +1,4 @@
+import type { PageOverrides } from '../pipeline/types.ts'
 import type { PageState } from '../lib/useProject.ts'
 
 interface Props {
@@ -11,7 +12,8 @@ export function PageList({ pages, selected, onSelect }: Props) {
     <ol className="page-list" aria-label="ページ一覧">
       {pages.map((p, i) => {
         const o = p.overrides
-        const edited = Object.keys(o).length > 0 || (p.analysis !== undefined && p.analysis.rotation !== p.analysis.autoRotation)
+        const edited = hasOverrides(o) || (p.analysis !== undefined && p.analysis.rotation !== p.analysis.autoRotation)
+        const note = p.error ? 'エラー' : o.bypass ? '補正なし' : edited ? '調整済み' : null
         return (
           <li key={p.key}>
             <button type="button" className={i === selected ? 'selected' : ''} onClick={() => onSelect(i)} aria-current={i === selected}>
@@ -21,20 +23,22 @@ export function PageList({ pages, selected, onSelect }: Props) {
                 ) : p.sourceUrl ? (
                   <img src={p.sourceUrl} alt="" className="dim" />
                 ) : (
-                  <div className="thumb-placeholder shimmer" />
+                  <div className="thumb-placeholder" />
                 )}
               </div>
-              <div className="meta">
-                <span className="page-no">{p.pageNo}</span>
-                {p.analysis?.isSpread && <span className="tag">見開き</span>}
-                {o.bypass && <span className="tag warn">補正なし</span>}
-                {edited && !o.bypass && <span className="tag manual">手動</span>}
-                {p.error && <span className="tag warn">エラー</span>}
-              </div>
+              <span className="meta">
+                {p.pageNo}
+                {note && <span className={p.error ? 'note error' : 'note'}>{note}</span>}
+              </span>
             </button>
           </li>
         )
       })}
     </ol>
   )
+}
+
+/** Overrides keep cleared fields as `undefined` (and cleared angles as holes), so count only set values. */
+function hasOverrides(o: PageOverrides): boolean {
+  return Object.values(o).some((v) => (Array.isArray(v) ? v.some((x) => x !== undefined) : v !== undefined))
 }
