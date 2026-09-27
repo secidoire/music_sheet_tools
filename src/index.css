@@ -25,6 +25,9 @@
   font-size: 14px;
   line-height: 1.5;
   color: var(--text);
+  /* Break Japanese between phrases rather than mid-word (where supported). */
+  word-break: auto-phrase;
+  text-wrap: pretty;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -315,6 +318,72 @@ input[type='range'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.notice-file {
+  margin-left: 8px;
+  color: var(--muted);
+}
+
+/* export menu */
+
+.export-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.export-button .icon {
+  width: 16px;
+  height: 16px;
+  margin-right: -4px;
+}
+
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 21;
+  width: 260px;
+  padding: 6px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 6px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.menu-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.menu-item {
+  justify-content: flex-start;
+  border: none;
+  background: none;
+  padding: 0 8px;
+}
+
+@media (hover: hover) {
+  .menu-item:hover:not(:disabled) {
+    background: var(--bg);
+  }
 }
 
 .drop-overlay {
@@ -769,9 +838,29 @@ figcaption {
     background: var(--bg);
     border-top: 1px solid var(--line);
   }
+  .bottom-bar .export-menu {
+    flex: 1;
+  }
   .bottom-bar .export-button {
     flex: 1;
     height: 44px;
+  }
+  .bottom-bar .menu {
+    position: fixed;
+    top: auto;
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(68px + env(safe-area-inset-bottom));
+    width: auto;
+  }
+  .bottom-bar .menu-item {
+    height: 48px;
+  }
+  .bottom-bar .menu-backdrop {
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .notice-file {
+    display: none;
   }
   /* Results appear where the export was started: just above the bottom bar. */
   .has-pages .notice {
@@ -820,6 +909,9 @@ figcaption {
 
 /* Touch: bigger targets, and 16px text in fields so iOS doesn't zoom in on focus. */
 @media (pointer: coarse) {
+  .drop-hint {
+    display: none;
+  }
   :root {
     --control-h: 40px;
   }

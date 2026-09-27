@@ -50,6 +50,7 @@ const ICONS = {
   next: 'm9.5 6 6 6-6 6',
   undo: 'M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
   close: 'M6 6l12 12M18 6 6 18',
+  down: 'm7 10 5 5 5-5',
 } as const
 
 export function Icon({ name }: { name: keyof typeof ICONS }) {

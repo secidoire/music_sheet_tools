@@ -5,6 +5,7 @@ import { ANALYSIS_DPI, resolvePage } from '../pipeline/process.ts'
 import { ProcessorClient } from '../worker/client.ts'
 import { rasterToJpegUrl } from './pdf.ts'
 import { openSources, type Source } from './source.ts'
+import { deliver, prepareDelivery, type ExportAction } from './deliver.ts'
 
 export const PREVIEW_DPI = 100
 /** Export resolutions to fall back through when the browser can't allocate a canvas that large. */
@@ -24,12 +25,14 @@ export interface PageState {
   error?: string
 }
 
-/** Finished export, kept so it can be saved again with a fresh tap (see `saveFile`). */
+/** Finished export, kept so it can be saved or opened again with a fresh tap. */
 export interface ExportResult {
   name: string
   file: File
   /** Object URL of the PDF as a download-only blob. */
   url: string
+  /** Object URL of the PDF as `application/pdf`, for viewing and printing. */
+  viewUrl: string
 }
 
 export interface ExportProgress {
@@ -62,7 +65,7 @@ export function useProject() {
     const gen = ++loadGen.current
     setError(null)
     setExported((old) => {
-      if (old) URL.revokeObjectURL(old.url)
+      if (old) revokeResult(old)
       return null
     })
     try {
@@ -101,7 +104,7 @@ export function useProject() {
       }
       setLoading(null)
     } catch (e) {
-      setError(`ファイルを読み込めませんでした: ${e instanceof Error ? e.message : e}`)
+      setError(`ファイルを読み込めませんでした（${e instanceof Error ? e.message : e}）`)
       setLoading(null)
     }
   }, [updatePage])
@@ -156,9 +159,11 @@ export function useProject() {
     [updatePage],
   )
 
-  const exportPdf = useCallback(async () => {
+  /** Builds the PDF, then downloads, prints or opens it. Call it straight from the click handler (see `prepareDelivery`). */
+  const exportPdf = useCallback(async (action: ExportAction) => {
     const doc = docRef.current
     if (!doc) return
+    const delivery = prepareDelivery(action)
     const c = getClient()
     setExporting({ done: 0, total: pages.length })
     try {
@@ -186,13 +191,16 @@ export function useProject() {
       const bytes = pdf as Uint8Array<ArrayBuffer>
       // octet-stream: with application/pdf, mobile browsers open a viewer instead of saving.
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }))
+      const file = new File([bytes], name, { type: 'application/pdf' })
+      const result = { name, url, file, viewUrl: URL.createObjectURL(file) }
       setExported((old) => {
-        if (old) URL.revokeObjectURL(old.url)
-        return { name, url, file: new File([bytes], name, { type: 'application/pdf' }) }
+        if (old) revokeResult(old)
+        return result
       })
-      saveUrl(url, name)
+      deliver(delivery, result)
     } catch (e) {
-      setError(`書き出しに失敗しました: ${e instanceof Error ? e.message : e}`)
+      delivery.cancel()
+      setError(`PDFを作成できませんでした（${e instanceof Error ? e.message : e}）`)
     } finally {
       setExporting(null)
     }
@@ -207,16 +215,7 @@ function sig(p: PageState, g: GlobalSettings): string {
   return p.analysis ? JSON.stringify(resolvePage(p.analysis, g, p.overrides)) : ''
 }
 
-/**
- * Starts a download of `url`. Browsers may ignore this when it runs long after the click
- * that started the export (iOS Safari), which is why the result also stays on screen
- * with its own download link.
- */
-export function saveUrl(url: string, name: string) {
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  document.body.append(a)
-  a.click()
-  a.remove()
+function revokeResult(r: ExportResult) {
+  URL.revokeObjectURL(r.url)
+  URL.revokeObjectURL(r.viewUrl)
 }

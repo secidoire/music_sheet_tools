@@ -48,8 +48,8 @@ export function PageStage({ page, settings, onOverrides, index, count, onSelect 
               value={view}
               onChange={setView}
               options={[
-                { value: 'before', label: '元画像' },
-                { value: 'after', label: '仕上がり' },
+                { value: 'before', label: '補正前' },
+                { value: 'after', label: '補正後' },
               ]}
             />
           </div>
@@ -57,7 +57,7 @@ export function PageStage({ page, settings, onOverrides, index, count, onSelect 
       </div>
 
       {!a || !r || !page.sourceUrl || !page.sourceSize ? (
-        <div className="stage-empty">{page.error ? `読み込めませんでした: ${page.error}` : '解析中…'}</div>
+        <div className="stage-empty">{page.error ? 'このページを読み込めませんでした' : '読み込み中…'}</div>
       ) : (
         <div className={`compare show-${view}`}>
           <figure className="compare-before">
@@ -71,16 +71,16 @@ export function PageStage({ page, settings, onOverrides, index, count, onSelect 
               angles={r.bypass ? [0] : r.angles}
               onSplitX={(x) => onOverrides((p) => ({ ...p, splitX: x }))}
             />
-            <figcaption>赤線は分割位置(ドラッグで調整)、緑線は傾きの目安</figcaption>
+            <figcaption>赤線：分割位置（ドラッグで移動）　緑線：傾きの目安</figcaption>
           </figure>
           <figure className="compare-after" {...swipe}>
             <div
               className={`sheets${page.previewSig !== JSON.stringify(r) ? ' stale' : ''}`}
               style={{ '--n': page.previewUrls?.length ?? 1 } as React.CSSProperties}
             >
-              {page.previewUrls?.map((u, i) => <img key={u} src={u} alt={`仕上がり ${i + 1}`} className="sheet" />) ?? <div className="sheet" />}
+              {page.previewUrls?.map((u, i) => <img key={u} src={u} alt={`補正後 ${i + 1}`} className="sheet" />) ?? <div className="sheet" />}
             </div>
-            <figcaption>仕上がり(A4)</figcaption>
+            <figcaption>補正後（A4）</figcaption>
           </figure>
         </div>
       )}
@@ -114,12 +114,12 @@ export function PageControls({ page, settings, onOverrides, onRotate }: Controls
 
   return (
     <section className="section">
-      <h2>このページ</h2>
+      <h2>このページのみ</h2>
 
       <fieldset className="items" disabled={r.bypass}>
         <div className="item row">
           <span className="item-label">向き</span>
-          {a.rotation !== a.autoRotation && <ResetButton label="向きを自動に戻す" onClick={() => onRotate(undefined)} />}
+          {a.rotation !== a.autoRotation && <ResetButton label="向きをリセット" onClick={() => onRotate(undefined)} />}
           <span className="row-end">
             <button type="button" className="icon-button" onClick={() => turn(-90)} aria-label="左に90°回転" title="左に90°回転">
               <Icon name="rotateLeft" />
@@ -137,11 +137,11 @@ export function PageControls({ page, settings, onOverrides, onRotate }: Controls
           >
             見開きを分割
           </Switch>
-          {o.splitX !== undefined && <ResetButton label="分割位置を自動に戻す" onClick={() => onOverrides((p) => ({ ...p, splitX: undefined }))} />}
+          {o.splitX !== undefined && <ResetButton label="分割位置をリセット" onClick={() => onOverrides((p) => ({ ...p, splitX: undefined }))} />}
         </div>
 
         <div className="item">
-          <span className="item-label">傾き</span>
+          <span className="item-label">傾き補正</span>
           {r.angles.map((v, i) => (
             <label className="field" key={i}>
               {partNames[i] && <span>{partNames[i]}</span>}
@@ -160,19 +160,19 @@ export function PageControls({ page, settings, onOverrides, onRotate }: Controls
                 max={MAX_SKEW_DEG}
                 step={0.05}
                 value={v}
-                aria-label={`${partNames[i]}傾き(度)`}
+                aria-label={`${partNames[i]}傾き（度）`}
                 onChange={(e) => e.target.value !== '' && setAngle(i, Math.max(-MAX_SKEW_DEG, Math.min(MAX_SKEW_DEG, Number(e.target.value))))}
               />
               <span className="unit">°</span>
-              <span className="reset-slot">{o.angles?.[i] !== undefined && <ResetButton label="傾きを自動に戻す" onClick={() => setAngle(i, undefined)} />}</span>
+              <span className="reset-slot">{o.angles?.[i] !== undefined && <ResetButton label="傾きをリセット" onClick={() => setAngle(i, undefined)} />}</span>
             </label>
           ))}
         </div>
       </fieldset>
 
       <div className="item">
-        <Switch checked={r.bypass} onChange={(v) => onOverrides((p) => ({ ...p, bypass: v || undefined }))} title="このページだけ補正せず、原本をそのままA4に配置します">
-          補正しない
+        <Switch checked={r.bypass} onChange={(v) => onOverrides((p) => ({ ...p, bypass: v || undefined }))} title="このページは補正せず、元の画像のままA4に配置します">
+          補正しない（元のまま）
         </Switch>
       </div>
     </section>

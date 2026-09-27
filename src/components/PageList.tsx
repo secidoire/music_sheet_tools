@@ -13,7 +13,7 @@ export function PageList({ pages, selected, onSelect }: Props) {
       {pages.map((p, i) => {
         const o = p.overrides
         const edited = hasOverrides(o) || (p.analysis !== undefined && p.analysis.rotation !== p.analysis.autoRotation)
-        const note = p.error ? 'エラー' : o.bypass ? '補正なし' : edited ? '手動' : null
+        const note = p.error ? 'エラー' : o.bypass ? '補正なし' : edited ? '調整済み' : null
         return (
           <li key={p.key}>
             <button type="button" className={i === selected ? 'selected' : ''} onClick={() => onSelect(i)} aria-current={i === selected}>

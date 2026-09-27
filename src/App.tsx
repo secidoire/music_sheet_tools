@@ -3,6 +3,7 @@ import { useProject, type ExportResult } from './lib/useProject.ts'
 import { PageControls, PageStage } from './components/PageEditor.tsx'
 import { PageList } from './components/PageList.tsx'
 import { SettingsPanel } from './components/SettingsPanel.tsx'
+import { ExportMenu } from './components/ExportMenu.tsx'
 import { Icon } from './components/ui.tsx'
 import { isImage, isPdf } from './lib/source.ts'
 
@@ -11,7 +12,6 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const page = p.pages[p.selected]
-  const busy = !!p.loading || !!p.exporting
 
   // ←/→ (or j/k) to move between pages.
   useEffect(() => {
@@ -30,10 +30,8 @@ export default function App() {
   }
   const pickFiles = () => fileInput.current?.click()
 
-  const exportButton = (
-    <button type="button" className="primary export-button" disabled={!p.pages.length || busy} onClick={() => void p.exportPdf()}>
-      {p.exporting ? `書き出し中 ${p.exporting.done}/${p.exporting.total}` : 'PDFを書き出す'}
-    </button>
+  const exportMenu = (
+    <ExportMenu disabled={!p.pages.length || !!p.loading} progress={p.exporting} dpi={p.exportDpi} onDpi={p.setExportDpi} onExport={(a) => void p.exportPdf(a)} />
   )
   const progress = p.loading ?? p.exporting
 
@@ -68,16 +66,16 @@ export default function App() {
         {p.fileName && (
           <span className="file-name" title={p.fileName}>
             {p.fileName}
-            <span className="file-count">{p.loading ? `解析中 ${p.loading.done}/${p.loading.total}` : `${p.pages.length}ページ`}</span>
+            <span className="file-count">{p.loading ? `読み込み中 ${p.loading.done}/${p.loading.total}` : `全${p.pages.length}ページ`}</span>
           </span>
         )}
         <div className="spacer" />
         {p.pages.length > 0 && (
           <>
             <button type="button" onClick={pickFiles}>
-              開く
+              ファイルを選択
             </button>
-            <span className="topbar-export">{exportButton}</span>
+            <span className="topbar-export">{exportMenu}</span>
           </>
         )}
         {progress && (
@@ -96,19 +94,15 @@ export default function App() {
 
       {p.pages.length === 0 ? (
         <main className="welcome">
-          <p className="welcome-lead">
-            スキャンした楽譜を、見開きの分割・傾き補正・背景の白飛ばし・余白の調整をして
-            <br />
-            A4のPDFにします。
-          </p>
+          <p className="welcome-lead">スキャンした楽譜の傾きや余白を整えて、A4サイズのPDFにします。</p>
           <button type="button" className="primary" onClick={pickFiles}>
-            PDF・画像を選ぶ
+            ファイルを選択
           </button>
-          <p className="welcome-note">
-            ドラッグ&ドロップでも開けます。複数の画像はファイル名順に1つのPDFになります。
-            <br />
-            処理はブラウザ内で完結し、ファイルは送信されません。
-          </p>
+          <div className="welcome-note">
+            <p className="drop-hint">PDF・画像ファイルは、ここにドラッグ＆ドロップしても追加できます。</p>
+            <p>画像を複数選ぶと、ファイル名順に1つのPDFにまとめます。</p>
+            <p>ファイルはサーバーに送信されず、すべてブラウザ内で処理されます。</p>
+          </div>
         </main>
       ) : (
         <main className="workspace">
@@ -127,9 +121,9 @@ export default function App() {
           )}
           <aside className="inspector">
             {page && <PageControls page={page} settings={p.settings} onOverrides={(o) => p.setOverrides(page.key, o)} onRotate={(r) => p.rotatePage(page.key, r)} />}
-            <SettingsPanel settings={p.settings} onChange={p.setSettings} exportDpi={p.exportDpi} onExportDpi={p.setExportDpi} />
+            <SettingsPanel settings={p.settings} onChange={p.setSettings} />
           </aside>
-          <div className="bottom-bar">{exportButton}</div>
+          <div className="bottom-bar">{exportMenu}</div>
         </main>
       )}
 
@@ -146,7 +140,12 @@ function ExportedNotice({ result, onClose }: { result: ExportResult; onClose: ()
   const canShare = typeof navigator.canShare === 'function' && navigator.canShare({ files: [result.file] })
   return (
     <div className="notice" role="status">
-      <span className="notice-text">{result.name}</span>
+      <span className="notice-text">
+        PDFを作成しました<span className="notice-file">{result.name}</span>
+      </span>
+      <a className="button" href={result.viewUrl} target="_blank" rel="noopener">
+        開く
+      </a>
       {canShare && (
         <button type="button" onClick={() => void navigator.share({ files: [result.file] }).catch(() => {})}>
           共有
