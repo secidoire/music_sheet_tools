@@ -41,14 +41,14 @@ export default function App() {
     setActivePart(0)
   }
 
-  // Ease the page into its correction when the analysis lands (or the page is re-analysed after a turn).
-  const shown = useRef<{ key?: string; analysis?: unknown }>({})
-  useEffect(() => {
-    const prev = shown.current
-    shown.current = { key: page?.key, analysis: a }
-    if (!a || prev.key !== page?.key || prev.analysis === a) return
-    setSettle(true)
-  }, [page?.key, a])
+  // Ease the page into its correction when the analysis lands (or the page is re-analysed
+  // after a turn). Derived during render so the transition is in place in the same commit
+  // as the new angle; an effect would apply the angle first and the transition too late.
+  const [shown, setShown] = useState<{ key?: string; analysis?: unknown }>({})
+  if (shown.key !== page?.key || shown.analysis !== a) {
+    setShown({ key: page?.key, analysis: a })
+    if (a && shown.key === page?.key) setSettle(true)
+  }
   useEffect(() => {
     if (!settle) return
     const id = setTimeout(() => setSettle(false), SETTLE_MS)
@@ -122,6 +122,12 @@ export default function App() {
     if (files.length) void p.load(files)
   }
   const pickFiles = () => fileInput.current?.click()
+  /** Opens the bundled sample through the same path as a user's file. */
+  const loadSample = async () => {
+    const res = await fetch(`${import.meta.env.BASE_URL}sample.jpg`)
+    const blob = await res.blob()
+    void p.load([new File([blob], 'サンプル.jpg', { type: 'image/jpeg' })])
+  }
 
   const o = page?.overrides ?? {}
   const rotated = !!a && a.rotation !== a.autoRotation
@@ -169,10 +175,30 @@ export default function App() {
 
       {p.pages.length === 0 ? (
         <main className="empty">
-          <button type="button" className={`dropzone${dragOver ? ' over' : ''}`} onClick={pickFiles}>
-            <span className="for-pointer">楽譜のPDF・画像をドロップ、またはクリックして選択</span>
-            <span className="for-touch">タップして楽譜のPDF・画像を選択</span>
-          </button>
+          <header className="empty-head">
+            <h1>楽譜PDF補正</h1>
+            <p>傾き・背景・余白をブラウザだけで直します</p>
+          </header>
+          <div className="view">
+            <div className={`sheet-slot${dragOver ? ' over' : ''}`} onClick={pickFiles}>
+              {/* Its click bubbles to the frame, which opens the file picker. */}
+              <button type="button" className="slot-pick">
+                <span className="for-pointer">楽譜のPDF・画像をドロップ、またはクリックして選択</span>
+                <span className="for-touch">タップして楽譜のPDF・画像を選択</span>
+              </button>
+              <button
+                type="button"
+                className="slot-sample"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void loadSample()
+                }}
+              >
+                サンプルで試す
+              </button>
+            </div>
+          </div>
+          <p className="empty-foot">ファイルはサーバーに送信されず、ブラウザ内で処理されます</p>
         </main>
       ) : (
         <>

@@ -20,6 +20,10 @@
   --paper-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
   --panel-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   --control-h: 32px;
+  /* Height of the bottom bar (one row of controls), shared with the empty state's footer. */
+  --bar-h: calc(var(--control-h) + 21px);
+  /* Height of the stage toolbar, shared with the empty state's header. */
+  --toolbar-h: calc(max(8px, env(safe-area-inset-top)) + max(36px, var(--control-h)));
   color-scheme: dark;
   font-family: system-ui, -apple-system, 'Segoe UI', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
   font-size: 14px;
@@ -237,27 +241,95 @@ kbd {
   overflow: hidden;
 }
 
-/* empty */
+/* empty: laid out like the workspace so the A4 frame sits exactly where the page will */
 
 .empty {
   flex: 1;
+  min-height: 0;
   display: flex;
-  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  flex-direction: column;
 }
 
-.dropzone {
-  flex: 1;
-  height: auto;
-  border: 1px dashed #4a4a4a;
-  border-radius: 8px;
-  background: transparent;
+.empty-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  padding: max(8px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+  min-height: var(--toolbar-h);
+  align-content: center;
+}
+
+.empty-head h1 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--muted);
-  font-size: 15px;
 }
 
-.dropzone.over {
-  border-color: var(--text);
+.empty-head p {
+  font-size: 12px;
+  color: #6f6f6f;
+}
+
+/* The A4 frame: drop target when empty, placeholder while a page renders. */
+.sheet-slot {
+  width: min(100cqw, 100cqh * 210 / 297);
+  aspect-ratio: 210 / 297;
+  border: 1px solid #3a3a3a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.empty .sheet-slot {
+  cursor: pointer;
+}
+
+.sheet-slot.over {
+  border-color: #6a6a6a;
+}
+
+.slot-pick {
+  height: auto;
+  border: none;
+  background: none;
+  padding: 0;
   color: var(--text);
+  font-size: 15px;
+  white-space: normal;
+}
+
+.slot-sample {
+  height: auto;
+  border: none;
+  background: none;
+  padding: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@media (hover: hover) {
+  .slot-sample:hover:not(:disabled) {
+    color: var(--text);
+  }
+}
+
+.empty-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(var(--bar-h) + env(safe-area-inset-bottom));
+  padding: 0 16px env(safe-area-inset-bottom);
+  font-size: 12px;
+  color: #6f6f6f;
+  text-align: center;
 }
 
 .for-touch {
@@ -296,7 +368,7 @@ kbd {
   align-items: center;
   gap: 12px;
   padding: max(8px, env(safe-area-inset-top)) 12px 0;
-  min-height: 44px;
+  min-height: var(--toolbar-h);
 }
 
 .tool-group {
@@ -529,6 +601,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 16px;
+  min-height: calc(var(--bar-h) + env(safe-area-inset-bottom));
   padding: 10px max(16px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   background: var(--chrome);
   border-top: 1px solid var(--line);
@@ -663,13 +736,6 @@ kbd {
   }
 }
 
-.menu-note {
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-  font-size: 12px;
-  color: var(--muted);
-}
-
 /* settings inside the … panel */
 
 .section + .section {
@@ -719,6 +785,10 @@ kbd {
 /* ---------- phones ---------- */
 
 @media (max-width: 720px) {
+  :root {
+    /* The bar wraps into two rows here. */
+    --bar-h: calc(var(--control-h) * 2 + 31px);
+  }
   .workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
