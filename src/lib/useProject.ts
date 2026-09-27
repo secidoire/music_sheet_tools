@@ -94,9 +94,12 @@ export function useProject() {
           const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
           const sourceUrl = await rasterToJpegUrl(raster, 1600)
           const sourceSize = { width: raster.width, height: raster.height }
+          if (gen !== loadGen.current) return
+          // Show the page as scanned first; the correction then animates in when the analysis lands.
+          updatePage(p.key, { sourceUrl, sourceSize })
           const { analysis } = await c.call({ type: 'analyze', pageKey: p.key, raster }, [raster.gray])
           if (gen !== loadGen.current) return
-          updatePage(p.key, { sourceUrl, sourceSize, analysis })
+          updatePage(p.key, { analysis })
         } catch (e) {
           updatePage(p.key, { error: String(e) })
         }

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 /** Checkbox drawn as a switch; the whole row is the hit area. */
 export function Switch({ checked, onChange, children, title }: { checked: boolean; onChange: (v: boolean) => void; children: ReactNode; title?: string }) {
@@ -34,21 +34,11 @@ export function Segmented<T extends string | number>({
   )
 }
 
-/** Shown next to a value only while it differs from the automatic one. */
-export function ResetButton({ onClick, label }: { onClick: () => void; label: string }) {
-  return (
-    <button type="button" className="icon-button reset" onClick={onClick} aria-label={label} title={label}>
-      <Icon name="undo" />
-    </button>
-  )
-}
-
 const ICONS = {
   rotateLeft: 'M4 5v5h5M4.6 10A8 8 0 1 1 6 16.5',
   rotateRight: 'M20 5v5h-5M19.4 10A8 8 0 1 0 18 16.5',
   prev: 'm14.5 6-6 6 6 6',
   next: 'm9.5 6 6 6-6 6',
-  undo: 'M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
   close: 'M6 6l12 12M18 6 6 18',
   down: 'm7 10 5 5 5-5',
 } as const
@@ -58,5 +48,39 @@ export function Icon({ name }: { name: keyof typeof ICONS }) {
     <svg className="icon" viewBox="0 0 24 24" aria-hidden fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
       <path d={ICONS[name]} />
     </svg>
+  )
+}
+
+/**
+ * Button that opens a panel next to it. Closes on Escape, on a click outside, or when a
+ * child calls `close`.
+ */
+export function Popover({
+  button,
+  className,
+  children,
+}: {
+  button: (props: { open: boolean; toggle: () => void }) => ReactNode
+  className?: string
+  children: (close: () => void) => ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+  const close = () => setOpen(false)
+  return (
+    <div className={`popover${className ? ` ${className}` : ''}`}>
+      {button({ open, toggle: () => setOpen((o) => !o) })}
+      {open && (
+        <>
+          <div className="popover-backdrop" onClick={close} />
+          <div className="popover-panel">{children(close)}</div>
+        </>
+      )}
+    </div>
   )
 }

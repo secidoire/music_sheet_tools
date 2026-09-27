@@ -1,182 +1,192 @@
-import { useRef, useState } from 'react'
-import type { GlobalSettings, PageOverrides, Rotation } from '../pipeline/types.ts'
-import { resolvePage } from '../pipeline/process.ts'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { ResolvedPage, Rotation } from '../pipeline/types.ts'
 import { MAX_SKEW_DEG } from '../pipeline/deskew.ts'
 import type { PageState } from '../lib/useProject.ts'
-import { SourceView } from './SourceView.tsx'
-import { Icon, ResetButton, Segmented, Switch } from './ui.tsx'
+import { DeskewView } from './DeskewView.tsx'
+import { Icon, Segmented } from './ui.tsx'
 
-type SetOverrides = (o: PageOverrides | ((prev: PageOverrides) => PageOverrides)) => void
+export type StageView = 'adjust' | 'result'
 
 interface StageProps {
   page: PageState
-  settings: GlobalSettings
-  onOverrides: SetOverrides
+  /** Resolved parameters (undefined until the page is analysed), with any in-progress slider value applied. */
+  resolved?: ResolvedPage
   index: number
   count: number
   onSelect: (i: number) => void
+  onRotate: (rotation: Rotation) => void
+  onToggleSplit: () => void
+  onSplitX: (x: number) => void
+  activePart: number
+  onActivePart: (i: number) => void
+  settle: boolean
+  view: StageView
+  onView: (v: StageView) => void
+  /** The "…" menu, rendered at the end of the toolbar. */
+  more: ReactNode
 }
 
-/** Before/after view of the selected page. On narrow screens only one side is shown at a time. */
-export function PageStage({ page, settings, onOverrides, index, count, onSelect }: StageProps) {
-  const [view, setView] = useState<'before' | 'after'>('after')
+/** The page itself, with a toolbar along its top edge for everything that isn't needed all the time. */
+export function Stage({ page, resolved: r, index, count, onSelect, onRotate, onToggleSplit, onSplitX, activePart, onActivePart, settle, view, onView, more }: StageProps) {
+  const a = page.analysis
   const swipe = useSwipe((dir) => {
     const i = index + dir
     if (i >= 0 && i < count) onSelect(i)
   })
-  const a = page.analysis
-  const r = a && resolvePage(a, settings, page.overrides)
+  // Only say something when it takes a while: quick pages just appear.
+  const slow = useDelayed(!page.error && !a, 1000)
+  const turn = (by: number) => a && onRotate((((a.rotation + by) % 360) + 360) % 360 as Rotation)
 
   return (
-    <div className="stage">
-      <div className="stage-bar">
-        <div className="pager">
-          <button type="button" className="icon-button" disabled={index === 0} onClick={() => onSelect(index - 1)} aria-label="前のページ">
-            <Icon name="prev" />
-          </button>
-          <span className="pager-pos">
-            {page.pageNo} / {count}
+    <section className="stage">
+      <div className="toolbar">
+        {count > 1 && (
+          <span className="tool-group pager">
+            <button type="button" className="tool" disabled={index === 0} onClick={() => onSelect(index - 1)} aria-label="前のページ" title="前のページ（PageUp）">
+              <Icon name="prev" />
+            </button>
+            <span className="pager-pos">
+              {page.pageNo} / {count}
+            </span>
+            <button type="button" className="tool" disabled={index === count - 1} onClick={() => onSelect(index + 1)} aria-label="次のページ" title="次のページ（PageDown）">
+              <Icon name="next" />
+            </button>
           </span>
-          <button type="button" className="icon-button" disabled={index === count - 1} onClick={() => onSelect(index + 1)} aria-label="次のページ">
-            <Icon name="next" />
-          </button>
-        </div>
-        {r && (
-          <div className="view-switch">
-            <Segmented
-              label="表示"
-              value={view}
-              onChange={setView}
-              options={[
-                { value: 'before', label: '補正前' },
-                { value: 'after', label: '補正後' },
-              ]}
-            />
-          </div>
         )}
+        <span className="tool-group">
+          <button type="button" className="tool" disabled={!a || r?.bypass} onClick={() => turn(-90)} aria-label="左に90°回転" title="左に90°回転">
+            <Icon name="rotateLeft" />
+          </button>
+          <button type="button" className="tool" disabled={!a || r?.bypass} onClick={() => turn(90)} aria-label="右に90°回転" title="右に90°回転">
+            <Icon name="rotateRight" />
+          </button>
+          <button type="button" className="tool text" disabled={!a || r?.bypass} aria-pressed={!!r?.split} onClick={onToggleSplit} aria-label="見開き分割">
+            <span className="label-long">見開き分割</span>
+            <span className="label-short">分割</span>
+          </button>
+        </span>
+        {slow && <span className="status">{page.sourceUrl ? '解析中' : '読み込み中'}</span>}
+        <span className="toolbar-end">
+          <Segmented<StageView>
+            label="表示"
+            value={view}
+            onChange={onView}
+            options={[
+              { value: 'adjust', label: '調整' },
+              { value: 'result', label: '仕上がり' },
+            ]}
+          />
+          {more}
+        </span>
       </div>
 
-      {!a || !r || !page.sourceUrl || !page.sourceSize ? (
-        <div className="stage-empty">{page.error ? 'このページを読み込めませんでした' : '読み込み中…'}</div>
-      ) : (
-        <div className={`compare show-${view}`}>
-          <figure className="compare-before">
-            <SourceView
-              url={page.sourceUrl}
-              width={page.sourceSize.width}
-              height={page.sourceSize.height}
-              rotation={r.bypass ? 0 : r.rotation}
-              split={r.split && !r.bypass}
-              splitX={r.splitX}
-              angles={r.bypass ? [0] : r.angles}
-              onSplitX={(x) => onOverrides((p) => ({ ...p, splitX: x }))}
-            />
-            <figcaption>赤線：分割位置（ドラッグで移動）　緑線：傾きの目安</figcaption>
-          </figure>
-          <figure className="compare-after" {...swipe}>
-            <div
-              className={`sheets${page.previewSig !== JSON.stringify(r) ? ' stale' : ''}`}
-              style={{ '--n': page.previewUrls?.length ?? 1 } as React.CSSProperties}
-            >
-              {page.previewUrls?.map((u, i) => <img key={u} src={u} alt={`補正後 ${i + 1}`} className="sheet" />) ?? <div className="sheet" />}
-            </div>
-            <figcaption>補正後（A4）</figcaption>
-          </figure>
-        </div>
+      <div className="view" {...swipe}>
+        {page.error ? (
+          <p className="status">このページを読み込めませんでした</p>
+        ) : view === 'result' && page.previewUrls ? (
+          <div className={`sheets${r && page.previewSig !== JSON.stringify(r) ? ' stale' : ''}`} style={{ '--n': page.previewUrls.length } as React.CSSProperties}>
+            {page.previewUrls.map((u, i) => (
+              <img key={u} src={u} alt={`仕上がり ${i + 1}`} className="sheet" />
+            ))}
+          </div>
+        ) : page.sourceUrl && page.sourceSize ? (
+          <DeskewView
+            url={page.sourceUrl}
+            width={page.sourceSize.width}
+            height={page.sourceSize.height}
+            rotation={r && !r.bypass ? r.rotation : 0}
+            split={!!r?.split && !r.bypass}
+            splitX={r?.splitX ?? 0.5}
+            angles={r && !r.bypass ? r.angles : [0]}
+            activePart={activePart}
+            onActivePart={onActivePart}
+            settle={settle}
+            onSplitX={onSplitX}
+          />
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+interface AngleProps {
+  resolved?: ResolvedPage
+  /** Angle the detector found for the active part. */
+  auto?: number
+  manual: boolean
+  activePart: number
+  onActivePart: (i: number) => void
+  onChange: (v: number) => void
+  onReset: () => void
+}
+
+/** The one control that is always there: skew of the active part, as a slider and a number. */
+export function AngleControl({ resolved: r, auto, manual, activePart, onActivePart, onChange, onReset }: AngleProps) {
+  const disabled = !r || r.bypass
+  const v = r?.angles[activePart] ?? 0
+  const clamp = (x: number) => Math.max(-MAX_SKEW_DEG, Math.min(MAX_SKEW_DEG, x))
+  return (
+    <div className="angle">
+      <span className="angle-label">傾き</span>
+      {r?.split && !r.bypass && (
+        <Segmented<number>
+          label="調整するページ"
+          value={activePart}
+          onChange={onActivePart}
+          options={[
+            { value: 0, label: '左' },
+            { value: 1, label: '右' },
+          ]}
+        />
       )}
+      <input
+        type="range"
+        min={-MAX_SKEW_DEG}
+        max={MAX_SKEW_DEG}
+        step={0.05}
+        value={v}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label="傾き"
+      />
+      <label className="angle-value">
+        <input
+          type="number"
+          min={-MAX_SKEW_DEG}
+          max={MAX_SKEW_DEG}
+          step={0.05}
+          value={Number(v.toFixed(2))}
+          disabled={disabled}
+          onChange={(e) => e.target.value !== '' && onChange(clamp(Number(e.target.value)))}
+          aria-label="傾き（度）"
+        />
+        °
+      </label>
+      <button
+        type="button"
+        className="reset"
+        disabled={disabled || !manual}
+        onClick={onReset}
+        title={auto !== undefined ? `自動検出の値（${auto.toFixed(2)}°）に戻す` : undefined}
+      >
+        リセット
+      </button>
     </div>
   )
 }
 
-interface ControlsProps {
-  page: PageState
-  settings: GlobalSettings
-  onOverrides: SetOverrides
-  /** Turns the page; undefined restores the detected orientation. */
-  onRotate: (rotation?: Rotation) => void
-}
-
-/** Per-page corrections. Values start from the automatic detection; a reset button marks the ones changed by hand. */
-export function PageControls({ page, settings, onOverrides, onRotate }: ControlsProps) {
-  const a = page.analysis
-  if (!a) return null
-  const r = resolvePage(a, settings, page.overrides)
-  const o = page.overrides
-  const partNames = r.split ? ['左', '右'] : ['']
-  const turn = (by: number) => onRotate((((a.rotation + by) % 360) + 360) % 360 as Rotation)
-
-  const setAngle = (i: number, v: number | undefined) =>
-    onOverrides((prev) => {
-      const angles = [...(prev.angles ?? [])]
-      angles[i] = v
-      return { ...prev, angles }
-    })
-
-  return (
-    <section className="section">
-      <h2>このページのみ</h2>
-
-      <fieldset className="items" disabled={r.bypass}>
-        <div className="item row">
-          <span className="item-label">向き</span>
-          {a.rotation !== a.autoRotation && <ResetButton label="向きをリセット" onClick={() => onRotate(undefined)} />}
-          <span className="row-end">
-            <button type="button" className="icon-button" onClick={() => turn(-90)} aria-label="左に90°回転" title="左に90°回転">
-              <Icon name="rotateLeft" />
-            </button>
-            <button type="button" className="icon-button" onClick={() => turn(90)} aria-label="右に90°回転" title="右に90°回転">
-              <Icon name="rotateRight" />
-            </button>
-          </span>
-        </div>
-
-        <div className="item row">
-          <Switch
-            checked={r.split}
-            onChange={(v) => onOverrides((p) => ({ ...p, split: v === a.isSpread ? undefined : v, angles: undefined }))}
-          >
-            見開きを分割
-          </Switch>
-          {o.splitX !== undefined && <ResetButton label="分割位置をリセット" onClick={() => onOverrides((p) => ({ ...p, splitX: undefined }))} />}
-        </div>
-
-        <div className="item">
-          <span className="item-label">傾き補正</span>
-          {r.angles.map((v, i) => (
-            <label className="field" key={i}>
-              {partNames[i] && <span>{partNames[i]}</span>}
-              <input
-                type="range"
-                min={-MAX_SKEW_DEG}
-                max={MAX_SKEW_DEG}
-                step={0.05}
-                value={v}
-                onChange={(e) => setAngle(i, Number(e.target.value))}
-                aria-label={`${partNames[i]}傾き`}
-              />
-              <input
-                type="number"
-                min={-MAX_SKEW_DEG}
-                max={MAX_SKEW_DEG}
-                step={0.05}
-                value={v}
-                aria-label={`${partNames[i]}傾き（度）`}
-                onChange={(e) => e.target.value !== '' && setAngle(i, Math.max(-MAX_SKEW_DEG, Math.min(MAX_SKEW_DEG, Number(e.target.value))))}
-              />
-              <span className="unit">°</span>
-              <span className="reset-slot">{o.angles?.[i] !== undefined && <ResetButton label="傾きをリセット" onClick={() => setAngle(i, undefined)} />}</span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
-
-      <div className="item">
-        <Switch checked={r.bypass} onChange={(v) => onOverrides((p) => ({ ...p, bypass: v || undefined }))} title="このページは補正せず、元の画像のままA4に配置します">
-          補正しない（元のまま）
-        </Switch>
-      </div>
-    </section>
-  )
+/** True once `on` has stayed true for `ms`. */
+function useDelayed(on: boolean, ms: number) {
+  const [late, setLate] = useState(false)
+  useEffect(() => {
+    if (!on) return
+    const id = setTimeout(() => setLate(true), ms)
+    return () => {
+      clearTimeout(id)
+      setLate(false)
+    }
+  }, [on, ms])
+  return on && late
 }
 
 /** Horizontal swipe → -1 (to the previous page) / +1 (to the next). Vertical movement is left to scrolling. */
@@ -185,7 +195,8 @@ function useSwipe(onSwipe: (dir: -1 | 1) => void) {
   return {
     onTouchStart: (e: React.TouchEvent) => {
       const t = e.touches[0]
-      start.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null
+      // Leave the split handle alone.
+      start.current = e.touches.length === 1 && !(e.target as Element).closest('.split-handle') ? { x: t.clientX, y: t.clientY } : null
     },
     onTouchEnd: (e: React.TouchEvent) => {
       const s = start.current

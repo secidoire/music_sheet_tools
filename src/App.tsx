@@ -1,28 +1,121 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useProject, type ExportResult } from './lib/useProject.ts'
-import { PageControls, PageStage } from './components/PageEditor.tsx'
+import { resolvePage } from './pipeline/process.ts'
+import { AngleControl, Stage, type StageView } from './components/PageEditor.tsx'
 import { PageList } from './components/PageList.tsx'
-import { SettingsPanel } from './components/SettingsPanel.tsx'
 import { ExportMenu } from './components/ExportMenu.tsx'
+import { MoreMenu } from './components/MoreMenu.tsx'
 import { Icon } from './components/ui.tsx'
 import { isImage, isPdf } from './lib/source.ts'
+import { MAX_SKEW_DEG } from './pipeline/deskew.ts'
+
+/** Slider value not yet written to the page's overrides (committed once the slider rests). */
+interface Draft {
+  key: string
+  part: number
+  value: number
+}
+
+const COMMIT_MS = 200
+const SETTLE_MS = 600
 
 export default function App() {
   const p = useProject()
   const [dragOver, setDragOver] = useState(false)
+  const [view, setView] = useState<StageView>('adjust')
+  const [activePart, setActivePart] = useState(0)
+  const [draft, setDraft] = useState<Draft | null>(null)
+  const [settle, setSettle] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const page = p.pages[p.selected]
+  const a = page?.analysis
 
-  // ←/→ (or j/k) to move between pages.
+  const resolved = a && page ? resolvePage(a, p.settings, page.overrides) : undefined
+  if (resolved && draft && draft.key === page.key) {
+    resolved.angles = resolved.angles.map((v, i) => (i === draft.part ? draft.value : v))
+  }
+  const part = resolved && activePart < resolved.angles.length ? activePart : 0
+
+  const selectPage = (i: number) => {
+    p.setSelected(i)
+    setActivePart(0)
+  }
+
+  // Ease the page into its correction when the analysis lands (or the page is re-analysed after a turn).
+  const shown = useRef<{ key?: string; analysis?: unknown }>({})
+  useEffect(() => {
+    const prev = shown.current
+    shown.current = { key: page?.key, analysis: a }
+    if (!a || prev.key !== page?.key || prev.analysis === a) return
+    setSettle(true)
+  }, [page?.key, a])
+  useEffect(() => {
+    if (!settle) return
+    const id = setTimeout(() => setSettle(false), SETTLE_MS)
+    return () => clearTimeout(id)
+  }, [settle])
+
+  // Write the slider value once it stops moving; until then only the CSS transform follows it.
+  useEffect(() => {
+    if (!draft) return
+    const id = setTimeout(() => {
+      p.setOverrides(draft.key, (o) => {
+        const angles = [...(o.angles ?? [])]
+        angles[draft.part] = draft.value
+        return { ...o, angles }
+      })
+      setDraft(null)
+    }, COMMIT_MS)
+    return () => clearTimeout(id)
+  }, [draft, p])
+
+  const setAngle = (v: number) => {
+    if (!page || !resolved || resolved.bypass) return
+    setSettle(false)
+    setDraft({ key: page.key, part, value: Math.round(Math.max(-MAX_SKEW_DEG, Math.min(MAX_SKEW_DEG, v)) * 100) / 100 })
+  }
+  const resetAngle = () => {
+    if (!page) return
+    setDraft(null)
+    setSettle(true)
+    p.setOverrides(page.key, (o) => {
+      const angles = [...(o.angles ?? [])]
+      angles[part] = undefined
+      return { ...o, angles }
+    })
+  }
+
+  // ←/→ nudge the angle (Shift: coarser), PageUp/PageDown change page, Enter downloads.
+  const keyState = useRef({ setAngle, resolved, part, selectPage, p })
+  useLayoutEffect(() => {
+    keyState.current = { setAngle, resolved, part, selectPage, p }
+  })
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
-      if (e.key === 'ArrowRight' || e.key === 'j') p.setSelected((i) => Math.min(p.pages.length - 1, i + 1))
-      else if (e.key === 'ArrowLeft' || e.key === 'k') p.setSelected((i) => Math.max(0, i - 1))
+      const t = e.target as Element
+      if (t.closest('input, select, textarea, [role="slider"], [role="dialog"], [role="menu"]')) return
+      const { setAngle, resolved, part, selectPage, p } = keyState.current
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && resolved) {
+        const step = (e.shiftKey ? 0.5 : 0.05) * (e.key === 'ArrowLeft' ? -1 : 1)
+        setAngle(resolved.angles[part] + step)
+      } else if (e.key === 'PageDown') {
+        selectPage(Math.min(p.pages.length - 1, p.selected + 1))
+      } else if (e.key === 'PageUp') {
+        selectPage(Math.max(0, p.selected - 1))
+      } else if (e.key === 'Enter' && !t.closest('button, a') && p.pages.length && !p.loading && !p.exporting) {
+        void p.exportPdf('download')
+      } else {
+        return
+      }
+      e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [p])
+  }, [])
+
+  useEffect(() => {
+    document.title = p.fileName ? `${p.fileName} - 楽譜PDF補正` : '楽譜PDF補正'
+  }, [p.fileName])
 
   const openFiles = (list: FileList | null | undefined) => {
     const files = [...(list ?? [])].filter((f) => isPdf(f) || isImage(f))
@@ -30,14 +123,27 @@ export default function App() {
   }
   const pickFiles = () => fileInput.current?.click()
 
-  const exportMenu = (
-    <ExportMenu disabled={!p.pages.length || !!p.loading} progress={p.exporting} dpi={p.exportDpi} onDpi={p.setExportDpi} onExport={(a) => void p.exportPdf(a)} />
-  )
-  const progress = p.loading ?? p.exporting
+  const o = page?.overrides ?? {}
+  const rotated = !!a && a.rotation !== a.autoRotation
+  const pageEdited = rotated || Object.values(o).some((v) => (Array.isArray(v) ? v.some((x) => x !== undefined) : v !== undefined))
+  const toggleSplit = () => {
+    if (!page || !a || !resolved) return
+    const split = !resolved.split
+    setActivePart(0)
+    p.setOverrides(page.key, (prev) => ({ ...prev, split: split === a.isSpread ? undefined : split, angles: undefined }))
+  }
+  const resetPage = () => {
+    if (!page) return
+    setDraft(null)
+    setSettle(true)
+    if (rotated) void p.rotatePage(page.key, undefined)
+    else p.setOverrides(page.key, {})
+  }
+  const autoAngle = a && (resolved?.split ? (a.angles.length === 2 ? a.angles[part] : a.wholeAngle) : a.wholeAngle)
 
   return (
     <div
-      className={`app${dragOver ? ' drag-over' : ''}${p.pages.length ? ' has-pages' : ''}`}
+      className={`app${p.pages.length ? ' has-pages' : ''}`}
       onDragOver={(e) => {
         e.preventDefault()
         setDragOver(true)
@@ -61,73 +167,69 @@ export default function App() {
         }}
       />
 
-      <header className="topbar">
-        <h1>楽譜PDF補正</h1>
-        {p.fileName && (
-          <span className="file-name" title={p.fileName}>
-            {p.fileName}
-            <span className="file-count">{p.loading ? `読み込み中 ${p.loading.done}/${p.loading.total}` : `全${p.pages.length}ページ`}</span>
-          </span>
-        )}
-        <div className="spacer" />
-        {p.pages.length > 0 && (
-          <>
-            <button type="button" onClick={pickFiles}>
-              ファイルを選択
-            </button>
-            <span className="topbar-export">{exportMenu}</span>
-          </>
-        )}
-        {progress && (
-          <div className="topbar-progress" role="progressbar" aria-valuenow={progress.done} aria-valuemax={progress.total}>
-            <span style={{ width: `${(progress.done / Math.max(1, progress.total)) * 100}%` }} />
-          </div>
-        )}
-      </header>
-
-      {p.error && (
-        <div className="notice error" role="alert">
-          {p.error}
-        </div>
-      )}
-      {p.exported && <ExportedNotice result={p.exported} onClose={p.dismissExported} />}
-
       {p.pages.length === 0 ? (
-        <main className="welcome">
-          <p className="welcome-lead">スキャンした楽譜の傾きや余白を整えて、A4サイズのPDFにします。</p>
-          <button type="button" className="primary" onClick={pickFiles}>
-            ファイルを選択
+        <main className="empty">
+          <button type="button" className={`dropzone${dragOver ? ' over' : ''}`} onClick={pickFiles}>
+            <span className="for-pointer">楽譜のPDF・画像をドロップ、またはクリックして選択</span>
+            <span className="for-touch">タップして楽譜のPDF・画像を選択</span>
           </button>
-          <div className="welcome-note">
-            <p className="drop-hint">PDF・画像ファイルは、ここにドラッグ＆ドロップしても追加できます。</p>
-            <p>画像を複数選ぶと、ファイル名順に1つのPDFにまとめます。</p>
-            <p>ファイルはサーバーに送信されず、すべてブラウザ内で処理されます。</p>
-          </div>
         </main>
       ) : (
-        <main className="workspace">
-          <PageList pages={p.pages} selected={p.selected} onSelect={p.setSelected} />
-          {page ? (
-            <PageStage
-              page={page}
-              settings={p.settings}
-              onOverrides={(o) => p.setOverrides(page.key, o)}
-              index={p.selected}
-              count={p.pages.length}
-              onSelect={p.setSelected}
-            />
-          ) : (
-            <div className="stage" />
-          )}
-          <aside className="inspector">
-            {page && <PageControls page={page} settings={p.settings} onOverrides={(o) => p.setOverrides(page.key, o)} onRotate={(r) => p.rotatePage(page.key, r)} />}
-            <SettingsPanel settings={p.settings} onChange={p.setSettings} />
-          </aside>
-          <div className="bottom-bar">{exportMenu}</div>
-        </main>
-      )}
+        <>
+          <main className="workspace">
+            {page && (
+              <Stage
+                page={page}
+                resolved={resolved}
+                index={p.selected}
+                count={p.pages.length}
+                onSelect={selectPage}
+                onRotate={(r) => p.rotatePage(page.key, r)}
+                onToggleSplit={toggleSplit}
+                onSplitX={(x) => p.setOverrides(page.key, (prev) => ({ ...prev, splitX: x }))}
+                activePart={part}
+                onActivePart={setActivePart}
+                settle={settle}
+                view={view}
+                onView={setView}
+                more={
+                  <MoreMenu
+                    bypass={resolved?.bypass}
+                    onBypass={(v) => p.setOverrides(page.key, (prev) => ({ ...prev, bypass: v || undefined }))}
+                    onResetPage={pageEdited ? resetPage : undefined}
+                    settings={p.settings}
+                    onSettings={p.setSettings}
+                  />
+                }
+              />
+            )}
+            {p.pages.length > 1 && <PageList pages={p.pages} selected={p.selected} onSelect={selectPage} />}
+          </main>
 
-      {dragOver && <div className="drop-overlay" aria-hidden />}
+          {p.error && (
+            <div className="notice error" role="alert">
+              {p.error}
+            </div>
+          )}
+          {p.exported && <ExportedNotice result={p.exported} onClose={p.dismissExported} />}
+
+          <footer className="bar">
+            <button type="button" onClick={pickFiles}>
+              開く
+            </button>
+            <AngleControl
+              resolved={resolved}
+              auto={autoAngle}
+              manual={(draft?.key === page?.key && draft?.part === part) || o.angles?.[part] !== undefined}
+              activePart={part}
+              onActivePart={setActivePart}
+              onChange={setAngle}
+              onReset={resetAngle}
+            />
+            <ExportMenu disabled={!!p.loading} progress={p.exporting} dpi={p.exportDpi} onDpi={p.setExportDpi} onExport={(action) => void p.exportPdf(action)} />
+          </footer>
+        </>
+      )}
     </div>
   )
 }
@@ -154,7 +256,7 @@ function ExportedNotice({ result, onClose }: { result: ExportResult; onClose: ()
       <a className="button primary" href={result.url} download={result.name}>
         ダウンロード
       </a>
-      <button type="button" className="icon-button" onClick={onClose} aria-label="閉じる">
+      <button type="button" className="tool" onClick={onClose} aria-label="閉じる">
         <Icon name="close" />
       </button>
     </div>
