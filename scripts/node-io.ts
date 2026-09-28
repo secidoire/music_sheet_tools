@@ -36,7 +36,10 @@ export async function renderPageRGBA(doc: PDFDocumentProxy, pageNo: number, dpi:
   // pdf.js accepts a node canvas context at runtime; its typings expect the DOM one.
   await page.render({ canvas: canvas as never, canvasContext: ctx as never, viewport }).promise
   page.cleanup()
-  return ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  // The native canvas memory is invisible to the GC, so without this every page stays resident (~1GB at 600dpi).
+  canvas.width = canvas.height = 0
+  return img
 }
 
 export function rgbaToGray(img: { width: number; height: number; data: Uint8ClampedArray }): GrayImage {

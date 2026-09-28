@@ -192,7 +192,11 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
     }
     // One side of a spread left blank (the back of a cover, an empty last page): no sheet for it.
     if (p.trim && p.split && !box) return
-    const image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale)
+    // A binarised page is already pure black and white and is thresholded again when packed
+    // to 1 bit, so interpolation only moves edges by a fraction of a pixel. Nearest is ~6x
+    // faster than cubic in OpenCV.js (and linear is slower than cubic there).
+    const interp = p.whiten.enabled && p.whiten.mode === 'adaptive' ? cv.INTER_NEAREST : cv.INTER_CUBIC
+    const image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale, interp)
     // After the one resampling step, so edges are sharpened at the output resolution.
     if (p.whiten.enabled && p.whiten.mode === 'levels' && p.whiten.sharpen) crispen(image)
     sheets.push({ image, content: box, staves })
@@ -262,6 +266,7 @@ export function layout(
   marginMm: number,
   vAlign: 'top' | 'center',
   maxUpscale: number,
+  interp: number = cv.INTER_CUBIC,
 ): GrayImage {
   const rot = Math.abs(deg) < 0.01 ? [1, 0, 0, 0, 1, 0] : rotationMatrix(img, deg)
   const rs = Math.abs(deg) < 0.01 ? { width: img.width, height: img.height } : rotatedSize(img, deg)
@@ -289,9 +294,9 @@ export function layout(
   if (scale < 0.5) {
     const pre = resizeGray(cv, img, scale * 2)
     const k = 1 / (scale * 2)
-    out = warp(cv, pre, [M[0] * k, M[1] * k, M[2], M[3] * k, M[4] * k, M[5]], W, H, cv.INTER_CUBIC)
+    out = warp(cv, pre, [M[0] * k, M[1] * k, M[2], M[3] * k, M[4] * k, M[5]], W, H, interp)
   } else {
-    out = warp(cv, img, M, W, H, cv.INTER_CUBIC)
+    out = warp(cv, img, M, W, H, interp)
   }
   // Whatever lies outside the trimmed box (the other page, stamps in the margin) would
   // otherwise show through in the margins.

@@ -13,6 +13,7 @@
     "lint": "oxlint",
     "debug:pipeline": "tsx scripts/debug-pipeline.ts",
     "debug:export": "tsx scripts/export-sample.ts",
+    "bench": "tsx scripts/bench.ts",
     "typecheck": "tsc -b && tsc -p tsconfig.scripts.json --noEmit"
   },
   "dependencies": {

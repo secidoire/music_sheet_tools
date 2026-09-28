@@ -63,6 +63,20 @@ npm run debug:export -- フェスティバルTp 600
 npx tsx scripts/verify-skew.ts フェスティバル.pdf 1 0.06 0.42 4
 ```
 
+### 速度の計測
+
+`scripts/bench.ts` はブラウザと同じ流れ(読み込み・解析・プレビュー・書き出し)を段階ごとに計測する。
+高速化の前に `--save` で出力を保存し、変更後に `--compare` で書き出し画素の差分を数えると、画質が変わっていないか確かめられる。
+ブラウザでは複数の Worker でページを並列に処理するため、実際の所要時間は合計より短い。
+
+```sh
+npm run bench -- --filter フェスティバルScore --pages 6 --save before
+# (変更後)
+npm run bench -- --filter フェスティバルScore --pages 6 --compare before
+# 関数ごとの内訳(CPU プロファイル、Chrome DevTools で開ける)
+node --import tsx --cpu-prof --cpu-prof-dir=debug-out/prof scripts/bench.ts --filter フェスティバルScore --pages 6
+```
+
 ## デプロイ
 
 `main` への push で GitHub Actions(`.github/workflows/deploy.yml`)がビルドして GitHub Pages に公開する。
