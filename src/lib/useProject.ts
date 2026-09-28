@@ -90,18 +90,31 @@ export function useProject() {
       }))
       setPages(initial)
       setLoading({ done: 0, total: doc.pages.length })
-      // Each worker takes the next page in turn; rasterising (main thread) overlaps their analysis.
+      // Rasterises a page and makes its display JPEG (main thread).
+      const prepare = async (p: PageState) => {
+        const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
+        const sourceUrl = await rasterToJpegUrl(raster, 1600)
+        return { raster, sourceUrl, sourceSize: { width: raster.width, height: raster.height } }
+      }
+      // Each worker takes the next page in turn, and one page is prepared ahead so the main
+      // thread works while the workers analyse; with a single worker this is the only overlap.
+      type Ahead = { i: number; page: Promise<Settled<Awaited<ReturnType<typeof prepare>>>> }
+      let ahead: Ahead | null = null
       let next = 0
       let done = 0
       await Promise.all(pool.workers.map(async (w) => {
         while (next < initial.length) {
           if (gen !== loadGen.current) return
-          const p = initial[next++]
+          const i = next++
+          const p = initial[i]
+          const mine = ahead?.i === i ? ahead.page : settle(prepare(p))
+          if (ahead?.i === i) ahead = null
+          if (!ahead && next < initial.length) ahead = { i: next, page: settle(prepare(initial[next])) }
           try {
-            const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
-            const sourceUrl = await rasterToJpegUrl(raster, 1600)
-            const sourceSize = { width: raster.width, height: raster.height }
-            if (gen !== loadGen.current) return
+            const r = await mine
+            if (!r.ok) throw r.error
+            const { raster, sourceUrl, sourceSize } = r.value
+            if (gen !== loadGen.current) return URL.revokeObjectURL(sourceUrl)
             // Show the page as scanned first; the correction then animates in when the analysis lands.
             updatePage(p.key, { sourceUrl, sourceSize })
             pool.assign(p.key, w)
@@ -114,6 +127,8 @@ export function useProject() {
           setLoading({ done: ++done, total: doc.pages.length })
         }
       }))
+      // A newer load took over: the page prepared ahead is never shown.
+      void (ahead as Ahead | null)?.page.then((r) => r.ok && URL.revokeObjectURL(r.value.sourceUrl))
       if (gen !== loadGen.current) return
       setLoading(null)
     } catch (e) {
@@ -123,6 +138,8 @@ export function useProject() {
   }, [updatePage])
 
   // Preview scheduler: one request in flight per worker (each renders the pages it stores), selected page first.
+  // While pages are still being analysed only the selected page is previewed, so the other
+  // previews don't hold up the analyses queued on the same workers.
   const inFlight = useRef(new Set<string>())
   const [tick, setTick] = useState(0)
   useEffect(() => {
@@ -130,7 +147,7 @@ export function useProject() {
     const pool = getPool()
     const busy = new Set([...inFlight.current].map((k) => pool.of(k)))
     const stale = (p: PageState) => p.analysis && !p.error && sig(p, settings) !== p.previewSig
-    const order = [pages[selected], ...pages].filter(Boolean)
+    const order = (loading ? [pages[selected]] : [pages[selected], ...pages]).filter(Boolean)
     for (const next of order) {
       const w = pool.of(next.key)
       if (!next.analysis || !stale(next) || inFlight.current.has(next.key) || !w || busy.has(w)) continue
@@ -152,7 +169,7 @@ export function useProject() {
           setTick((t) => t + 1)
         })
     }
-  }, [pages, settings, selected, exporting, tick, updatePage])
+  }, [pages, settings, selected, loading, exporting, tick, updatePage])
 
   const setOverrides = useCallback(
     (key: string, o: PageOverrides | ((prev: PageOverrides) => PageOverrides)) =>
