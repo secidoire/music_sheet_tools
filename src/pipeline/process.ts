@@ -142,6 +142,11 @@ export function resolvePage(a: PageAnalysis, g: GlobalSettings, o: PageOverrides
   }
 }
 
+/** Whether the page's sheets are pure black and white (exported at 1 bit per pixel). An untouched page keeps its tones. */
+export function isBilevel(p: ResolvedPage): boolean {
+  return !p.bypass && p.whiten.enabled && p.whiten.mode === 'adaptive'
+}
+
 export interface RenderedSheet {
   /** A4 portrait page at `outDpi`. */
   image: GrayImage
@@ -195,7 +200,7 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
     // A binarised page is already pure black and white and is thresholded again when packed
     // to 1 bit, so interpolation only moves edges by a fraction of a pixel. Nearest is ~6x
     // faster than cubic in OpenCV.js (and linear is slower than cubic there).
-    const interp = p.whiten.enabled && p.whiten.mode === 'adaptive' ? cv.INTER_NEAREST : cv.INTER_CUBIC
+    const interp = isBilevel(p) ? cv.INTER_NEAREST : cv.INTER_CUBIC
     const image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale, interp)
     // After the one resampling step, so edges are sharpened at the output resolution.
     if (p.whiten.enabled && p.whiten.mode === 'levels' && p.whiten.sharpen) crispen(image)

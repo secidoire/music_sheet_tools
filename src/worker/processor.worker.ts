@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import type { CV, GrayImage } from '../pipeline/types.ts'
 import { resizeGray } from '../pipeline/image.ts'
-import { analyzePage, ANALYSIS_DPI, renderPage, staffDpiScale } from '../pipeline/process.ts'
+import { analyzePage, ANALYSIS_DPI, isBilevel, renderPage, staffDpiScale } from '../pipeline/process.ts'
 import type { RasterPayload, RequestMessage, ResponseMessage, WorkerRequest, WorkerResponses } from './protocol.ts'
 import { encodeSheet, PdfBuilder } from './pdf-builder.ts'
 
@@ -71,8 +71,7 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
     }
     case 'exportPage': {
       const sheets = renderPage(cv, toGray(req.raster), req.raster.dpi * req.page.dpiScale, req.page, req.outDpi)
-      const bilevel = req.page.whiten.enabled && req.page.whiten.mode === 'adaptive'
-      return { sheets: await Promise.all(sheets.map((s) => encodeSheet(s.image, bilevel))) }
+      return { sheets: await Promise.all(sheets.map((s) => encodeSheet(s.image, isBilevel(req.page)))) }
     }
     case 'buildPdf': {
       const builder = await PdfBuilder.create()

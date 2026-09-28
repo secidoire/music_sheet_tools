@@ -24,7 +24,7 @@ import { deflateSync, inflateSync } from 'node:zlib'
 import { parseArgs } from 'node:util'
 import { listPdfs, openPdf, renderPageRGBA, rgbaToGray } from './node-io.ts'
 import { loadCvNode } from './node-cv.ts'
-import { analyzePage, ANALYSIS_DPI, renderPage, resolvePage, staffDpiScale } from '../src/pipeline/process.ts'
+import { analyzePage, ANALYSIS_DPI, isBilevel, renderPage, resolvePage, staffDpiScale } from '../src/pipeline/process.ts'
 import { resizeGray } from '../src/pipeline/image.ts'
 import { DEFAULT_SETTINGS } from '../src/pipeline/defaults.ts'
 import type { GlobalSettings, GrayImage } from '../src/pipeline/types.ts'
@@ -44,7 +44,6 @@ const { values: args } = parseArgs({
 })
 const dpi = Number(args.dpi)
 const settings: GlobalSettings = { ...DEFAULT_SETTINGS, whiten: { ...DEFAULT_SETTINGS.whiten, mode: args.mode as GlobalSettings['whiten']['mode'] } }
-const bilevel = settings.whiten.enabled && settings.whiten.mode === 'adaptive'
 const saveDir = args.save && `debug-out/bench/${args.save}`
 const refDir = args.compare && `debug-out/bench/${args.compare}`
 if (saveDir) mkdirSync(saveDir, { recursive: true })
@@ -85,13 +84,14 @@ for (const [fi, file] of files.entries()) {
     const full = time('gray', () => rgbaToGray(rgba))
     const out = time('process', () => renderPage(cv, full, dpi, page, dpi))
     const t2 = performance.now()
+    const bilevel = isBilevel(page)
     for (const s of out) await encodeSheet(s.image, bilevel)
     total.encode += performance.now() - t2
 
     for (const [k, s] of out.entries()) {
       const name = `f${fi}_p${p}_${k}.bin`
-      if (saveDir) writeFileSync(`${saveDir}/${name}`, deflateSync(exported(s.image), { level: 1 }))
-      if (refDir) compare(`${refDir}/${name}`, exported(s.image))
+      if (saveDir) writeFileSync(`${saveDir}/${name}`, deflateSync(exported(s.image, bilevel), { level: 1 }))
+      if (refDir) compare(`${refDir}/${name}`, exported(s.image, bilevel))
     }
     pages++
     sheets += out.length
@@ -100,7 +100,7 @@ for (const [fi, file] of files.entries()) {
 }
 
 /** Pixels as they end up in the PDF: thresholded at 128 when packed to 1 bit. */
-function exported(img: GrayImage): Uint8Array {
+function exported(img: GrayImage, bilevel: boolean): Uint8Array {
   const header = new Uint8Array(new Uint32Array([img.width, img.height]).buffer)
   const px = bilevel ? img.data.map((v) => (v >= 128 ? 255 : 0)) : img.data
   const out = new Uint8Array(8 + px.length)
