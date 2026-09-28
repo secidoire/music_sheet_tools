@@ -88,10 +88,16 @@ export function useProject() {
       }))
       setPages(initial)
       setLoading({ done: 0, total: doc.pages.length })
-      for (const p of initial) {
+      const rasterize = (p: PageState) => settle(doc.pages[p.pageNo - 1].render(ANALYSIS_DPI))
+      // The next page is rasterised (main thread) while the worker analyses this one.
+      let ahead = initial.length ? rasterize(initial[0]) : null
+      for (const [i, p] of initial.entries()) {
         if (gen !== loadGen.current) return
+        const rendered = await ahead!
+        ahead = i + 1 < initial.length ? rasterize(initial[i + 1]) : null
         try {
-          const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
+          if (!rendered.ok) throw rendered.error
+          const raster = rendered.value
           const sourceUrl = await rasterToJpegUrl(raster, 1600)
           const sourceSize = { width: raster.width, height: raster.height }
           if (gen !== loadGen.current) return
@@ -168,25 +174,44 @@ export function useProject() {
     if (!doc) return
     const delivery = prepareDelivery(action)
     const c = getClient()
-    setExporting({ done: 0, total: pages.length })
+    setExporting({ done: 0, total: pages.filter((p) => p.analysis).length })
     try {
       await c.call({ type: 'exportBegin' })
-      for (const [i, p] of pages.entries()) {
-        if (!p.analysis) continue
-        const page = resolvePage(p.analysis, settings, p.overrides)
+      const jobs = pages.flatMap((p) => (p.analysis ? [{ p, page: resolvePage(p.analysis, settings, p.overrides) }] : []))
+      const dpis = EXPORT_FALLBACK.filter((d) => d <= exportDpi)
+      // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
+      const rasterize = (j: (typeof jobs)[number], dpi: number) => doc.pages[j.p.pageNo - 1].render(dpi / j.page.dpiScale)
+      // The next page is rasterised (main thread) at full resolution while the worker processes this one.
+      let readAhead = true
+      let ahead = jobs.length ? settle(rasterize(jobs[0], dpis[0])) : null
+      for (const [i, j] of jobs.entries()) {
+        let pre = ahead ? await ahead : null
+        ahead = readAhead && i + 1 < jobs.length ? settle(rasterize(jobs[i + 1], dpis[0])) : null
         // Very large canvases fail on memory-constrained devices (e.g. iOS); retry at a lower resolution.
-        for (const dpi of EXPORT_FALLBACK.filter((d) => d <= exportDpi)) {
+        for (let k = 0; k < dpis.length; ) {
+          const dpi = dpis[k]
           try {
-            // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
-            const raster = await doc.pages[p.pageNo - 1].render(dpi / page.dpiScale)
-            await c.call({ type: 'exportPage', raster, page, outDpi: dpi }, [raster.gray])
+            const raster = pre?.ok ? pre.value : await rasterize(j, dpi)
+            pre = null
+            await c.call({ type: 'exportPage', raster, page: j.page, outDpi: dpi }, [raster.gray])
             break
           } catch (e) {
-            if (dpi === EXPORT_FALLBACK[EXPORT_FALLBACK.length - 1]) throw e
-            console.warn(`page ${p.pageNo}: export at ${dpi}dpi failed, retrying lower`, e)
+            pre = null
+            if (readAhead) {
+              // Reading ahead holds a second full-resolution page; it must never cost resolution.
+              // Stop it for the rest of the export and retry this resolution with the memory back.
+              readAhead = false
+              await ahead
+              ahead = null
+              console.warn(`page ${j.p.pageNo}: export at ${dpi}dpi failed, retrying without read-ahead`, e)
+              continue
+            }
+            if (k === dpis.length - 1) throw e
+            console.warn(`page ${j.p.pageNo}: export at ${dpi}dpi failed, retrying lower`, e)
+            k++
           }
         }
-        setExporting({ done: i + 1, total: pages.length })
+        setExporting({ done: i + 1, total: jobs.length })
       }
       const { pdf } = await c.call({ type: 'exportEnd' })
       const base = (fileName ?? 'score').replace(/ ほか\d+件$/, '').replace(/\.[a-z0-9]+$/i, '')
@@ -216,6 +241,13 @@ export function useProject() {
 
 function sig(p: PageState, g: GlobalSettings): string {
   return p.analysis ? JSON.stringify(resolvePage(p.analysis, g, p.overrides)) : ''
+}
+
+type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
+
+/** Captures the outcome of work started ahead of time, so it is never an unhandled rejection if unused. */
+function settle<T>(p: Promise<T>): Promise<Settled<T>> {
+  return p.then((value) => ({ ok: true, value }), (error: unknown) => ({ ok: false, error }))
 }
 
 function revokeResult(r: ExportResult) {

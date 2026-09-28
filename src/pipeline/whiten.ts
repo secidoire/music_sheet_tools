@@ -56,17 +56,44 @@ function estimateBackground(cv: CV, img: GrayImage, dpi: number): Uint8Array {
   return out
 }
 
+/**
+ * Above this resolution the Gaussian local mean is computed on a copy downscaled to it.
+ * At 600dpi the 4mm window is ~95px wide and the full-resolution blur dominated export time;
+ * the mean is smooth (σ ≈ 0.6mm) so it survives the round trip, while the comparison
+ * against it still happens at full resolution. Differs from the full-resolution result
+ * only in isolated edge pixels.
+ */
+const MEAN_DPI = 150
+
 function adaptive(cv: CV, img: GrayImage, strength: number, dpi: number): GrayImage {
   const src = matFromGray(cv, img)
-  const dst = new cv.Mat()
   // Block ≈ 4mm: larger than a note head, smaller than lighting gradients.
   const block = Math.round((4 / 25.4) * dpi) | 1
   const c = 6 + (Math.min(100, Math.max(0, strength)) / 100) * 24
-  cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, block, c)
-  const out = grayFromMat(dst)
-  src.delete()
-  dst.delete()
-  return out
+  if (dpi <= MEAN_DPI) {
+    const dst = new cv.Mat()
+    cv.adaptiveThreshold(src, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, block, c)
+    const out = grayFromMat(dst)
+    src.delete()
+    dst.delete()
+    return out
+  }
+  const s = MEAN_DPI / dpi
+  const small = new cv.Mat()
+  cv.resize(src, small, new cv.Size(Math.max(1, Math.round(img.width * s)), Math.max(1, Math.round(img.height * s))), 0, 0, cv.INTER_AREA)
+  // Same σ as adaptiveThreshold derives from `block`, in downscaled pixels.
+  const sigma = (0.3 * ((block - 1) * 0.5 - 1) + 0.8) * s
+  cv.GaussianBlur(small, small, new cv.Size(0, 0), sigma, sigma, cv.BORDER_REPLICATE)
+  const mean = new cv.Mat()
+  cv.resize(small, mean, new cv.Size(img.width, img.height), 0, 0, cv.INTER_LINEAR)
+  // adaptiveThreshold's THRESH_BINARY rule: white where src - mean > -ceil(c).
+  const t = -Math.ceil(c)
+  const m = mean.data
+  const d = img.data
+  const out = new Uint8Array(d.length)
+  for (let i = 0; i < d.length; i++) out[i] = d[i] - m[i] > t ? 255 : 0
+  ;[src, small, mean].forEach((x) => x.delete())
+  return { width: img.width, height: img.height, data: out }
 }
 
 /**
