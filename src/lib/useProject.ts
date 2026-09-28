@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from '../pipeline/defaults.ts'
 import { ANALYSIS_DPI, resolvePage } from '../pipeline/process.ts'
 import { poolSize, ProcessorClient, ProcessorPool } from '../worker/client.ts'
 import type { EncodedSheet } from '../worker/pdf-builder.ts'
+import type { RasterPayload } from '../worker/protocol.ts'
 import { rasterToJpegUrl } from './pdf.ts'
 import { openSources, type Source } from './source.ts'
 import { deliver, prepareDelivery, type ExportAction } from './deliver.ts'
@@ -192,21 +193,34 @@ export function useProject() {
       const dpis = EXPORT_FALLBACK.filter((d) => d <= exportDpi)
       const sheets: EncodedSheet[][] = []
       let done = 0
-      const exportAt = async (w: ProcessorClient, j: (typeof jobs)[number], dpi: number) => {
-        // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
-        const raster = await doc.pages[j.p.pageNo - 1].render(dpi / j.page.dpiScale)
-        return (await w.call({ type: 'exportPage', raster, page: j.page, outDpi: dpi }, [raster.gray])).sheets
+      // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
+      const rasterize = (i: number, dpi: number) => doc.pages[jobs[i].p.pageNo - 1].render(dpi / jobs[i].page.dpiScale)
+      const exportAt = async (w: ProcessorClient, i: number, dpi: number, raster?: RasterPayload) => {
+        raster ??= await rasterize(i, dpi)
+        return (await w.call({ type: 'exportPage', raster, page: jobs[i].page, outDpi: dpi }, [raster.gray])).sheets
+      }
+      // One page is rasterised ahead (main thread) so it works while the workers do;
+      // with a single worker this is the only overlap.
+      let ahead: { i: number; raster: Promise<Settled<RasterPayload>> } | null = null
+      const dropAhead = async () => {
+        await ahead?.raster
+        ahead = null
       }
       // Working in parallel holds several full-resolution pages at once, which must never cost
-      // resolution: after any failure the extra workers are stopped (freeing their memory) and
-      // the remaining pages go through one worker, as they would without parallelism.
+      // resolution: after any failure the extra workers are stopped and the read-ahead dropped
+      // (freeing their memory), and the remaining pages go through one worker, one at a time.
       const failed: number[] = []
       let next = 0
       await Promise.all(lanes.map(async (w) => {
         while (next < jobs.length && !failed.length) {
           const i = next++
+          const mine = ahead?.i === i ? ahead.raster : settle(rasterize(i, dpis[0]))
+          if (ahead?.i === i) ahead = null
+          if (!ahead && next < jobs.length) ahead = { i: next, raster: settle(rasterize(next, dpis[0])) }
           try {
-            sheets[i] = await exportAt(w, jobs[i], dpis[0])
+            const r = await mine
+            if (!r.ok) throw r.error
+            sheets[i] = await exportAt(w, i, dpis[0], r.value)
             setExporting({ done: ++done, total: jobs.length })
           } catch (e) {
             console.warn(`page ${jobs[i].p.pageNo}: export at ${dpis[0]}dpi failed, retrying alone`, e)
@@ -215,12 +229,13 @@ export function useProject() {
         }
       }))
       extra.forEach((w) => w.terminate())
+      await dropAhead()
       const rest = [...failed, ...Array.from({ length: jobs.length - next }, (_, k) => next + k)].sort((a, b) => a - b)
       for (const i of rest) {
         // Very large canvases fail on memory-constrained devices (e.g. iOS); retry at a lower resolution.
         for (const [k, dpi] of dpis.entries()) {
           try {
-            sheets[i] = await exportAt(main, jobs[i], dpi)
+            sheets[i] = await exportAt(main, i, dpi)
             break
           } catch (e) {
             if (k === dpis.length - 1) throw e
@@ -259,6 +274,13 @@ export function useProject() {
 
 function sig(p: PageState, g: GlobalSettings): string {
   return p.analysis ? JSON.stringify(resolvePage(p.analysis, g, p.overrides)) : ''
+}
+
+type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
+
+/** Captures the outcome of work started ahead of time, so it is never an unhandled rejection if unused. */
+function settle<T>(p: Promise<T>): Promise<Settled<T>> {
+  return p.then((value) => ({ ok: true, value }), (error: unknown) => ({ ok: false, error }))
 }
 
 function revokeResult(r: ExportResult) {
