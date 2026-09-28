@@ -30,4 +30,52 @@ export class ProcessorClient {
       this.worker.postMessage({ ...req, id } satisfies RequestMessage, transfer)
     })
   }
+
+  /** Stops the worker and frees its memory (an OpenCV heap never shrinks while it lives). */
+  terminate() {
+    this.worker.terminate()
+    const err = new Error('worker terminated')
+    for (const p of this.pending.values()) p.reject(err)
+    this.pending.clear()
+  }
+}
+
+/**
+ * Processing workers that work on different pages at once. A page's stored source
+ * stays in the worker that analysed it, so later requests for it go to that worker.
+ */
+export class ProcessorPool {
+  readonly workers: ProcessorClient[]
+  private owners = new Map<string, ProcessorClient>()
+
+  constructor(size: number) {
+    this.workers = Array.from({ length: size }, () => new ProcessorClient())
+  }
+
+  /** Worker that stores `pageKey`'s source. */
+  of(pageKey: string): ProcessorClient | undefined {
+    return this.owners.get(pageKey)
+  }
+
+  assign(pageKey: string, w: ProcessorClient) {
+    this.owners.set(pageKey, w)
+  }
+
+  async reset() {
+    this.owners.clear()
+    await Promise.all(this.workers.map((w) => w.call({ type: 'reset' })))
+  }
+}
+
+/**
+ * How many pages to process at once. Every worker holds its own OpenCV heap and a
+ * full-resolution page while exporting, so memory-constrained devices get one:
+ * iOS/iPadOS kill tabs that use a lot of memory.
+ */
+export function poolSize(): number {
+  const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+  if (ios || (memory !== undefined && memory < 4)) return 1
+  const cores = navigator.hardwareConcurrency || 2
+  return Math.max(2, Math.min(/Android|Mobi/.test(navigator.userAgent) ? 2 : 3, cores - 1))
 }

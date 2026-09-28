@@ -3,7 +3,7 @@ import type { CV, GrayImage } from '../pipeline/types.ts'
 import { resizeGray } from '../pipeline/image.ts'
 import { analyzePage, ANALYSIS_DPI, renderPage, staffDpiScale } from '../pipeline/process.ts'
 import type { RasterPayload, RequestMessage, ResponseMessage, WorkerRequest, WorkerResponses } from './protocol.ts'
-import { PdfBuilder } from './pdf-builder.ts'
+import { encodeSheet, PdfBuilder } from './pdf-builder.ts'
 
 declare const self: DedicatedWorkerGlobalScope
 
@@ -24,7 +24,6 @@ function loadCv(): Promise<CV> {
 
 /** Gray sources at a real ANALYSIS_DPI, kept for re-rendering previews when settings change. */
 const sources = new Map<string, { gray: GrayImage; dpiScale: number }>()
-let builder: PdfBuilder | null = null
 
 function toGray(r: RasterPayload): GrayImage {
   return { width: r.width, height: r.height, data: new Uint8Array(r.gray) }
@@ -50,7 +49,6 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       return { ok: true }
     case 'reset':
       sources.clear()
-      builder = null
       return { ok: true }
     case 'analyze': {
       let gray = toGray(req.raster)
@@ -71,20 +69,15 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       const sheets = renderPage(cv, src.gray, ANALYSIS_DPI, req.page, req.outDpi)
       return { sheets: await Promise.all(sheets.map((s) => encodeJpeg(s.image))) }
     }
-    case 'exportBegin':
-      builder = await PdfBuilder.create()
-      return { ok: true }
     case 'exportPage': {
-      if (!builder) throw new Error('export not started')
       const sheets = renderPage(cv, toGray(req.raster), req.raster.dpi * req.page.dpiScale, req.page, req.outDpi)
-      for (const s of sheets) builder.addGrayPage(s.image, req.page.whiten.enabled && req.page.whiten.mode === 'adaptive')
-      return { sheets: sheets.length }
+      const bilevel = req.page.whiten.enabled && req.page.whiten.mode === 'adaptive'
+      return { sheets: await Promise.all(sheets.map((s) => encodeSheet(s.image, bilevel))) }
     }
-    case 'exportEnd': {
-      if (!builder) throw new Error('export not started')
-      const pdf = await builder.save()
-      builder = null
-      return { pdf }
+    case 'buildPdf': {
+      const builder = await PdfBuilder.create()
+      for (const s of req.sheets) builder.addPage(s)
+      return { pdf: await builder.save() }
     }
   }
 }
@@ -95,14 +88,21 @@ self.onmessage = (e: MessageEvent<RequestMessage>) => {
   const { id, ...req } = e.data
   queue = queue.then(async () => {
     let msg: ResponseMessage
-    const transfer: Transferable[] = []
+    let transfer: Transferable[] = []
     try {
       const result = await handle(req as WorkerRequest)
-      if ('pdf' in result) transfer.push(result.pdf.buffer)
+      transfer = transferables(result)
       msg = { id, ok: true, result }
     } catch (err) {
       msg = { id, ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     self.postMessage(msg, transfer)
   })
+}
+
+/** Buffers in a result that are handed over instead of copied. */
+function transferables(result: WorkerResponses[WorkerRequest['type']]): Transferable[] {
+  if ('pdf' in result) return [result.pdf.buffer]
+  if ('sheets' in result) return result.sheets.flatMap((s) => (s instanceof Blob ? [] : [s.data.buffer]))
+  return []
 }

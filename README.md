@@ -34,7 +34,7 @@
 | 場所 | 役割 |
 | --- | --- |
 | `src/pipeline/` | 画像処理パイプライン(向き検出・分割・傾き検出・五線検出・白飛ばし・トリミング・A4配置)。UI 非依存で、ブラウザの Worker と Node の検証スクリプトで共用 |
-| `src/worker/` | 処理用 Web Worker(OpenCV.js、pdf-lib による PDF 組み立て) |
+| `src/worker/` | 処理用 Web Worker(OpenCV.js、pdf-lib による PDF 組み立て)。PC では2〜3個でページを並列に処理し、iOS などメモリの少ない端末では1個 |
 | `src/lib/` | pdf.js によるラスタライズ(メインスレッド、タイル分割)、状態管理 |
 | `src/components/` | UI |
 | `scripts/` | UI なしの検証スクリプト、サンプル画像の生成(`make-sample.mjs`) |

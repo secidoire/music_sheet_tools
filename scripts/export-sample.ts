@@ -10,7 +10,7 @@ import { loadCvNode } from './node-cv.ts'
 import { analyzePage, ANALYSIS_DPI, renderPage, resolvePage, staffDpiScale } from '../src/pipeline/process.ts'
 import { resizeGray, crop } from '../src/pipeline/image.ts'
 import { DEFAULT_SETTINGS } from '../src/pipeline/defaults.ts'
-import { PdfBuilder } from '../src/worker/pdf-builder.ts'
+import { encodeSheet, PdfBuilder } from '../src/worker/pdf-builder.ts'
 
 const [filter, dpiArg] = process.argv.slice(2)
 const dpi = Number(dpiArg ?? 600)
@@ -26,7 +26,7 @@ for (let p = 1; p <= doc.numPages; p++) {
   const dpiScale = staffDpiScale(cv, full, dpi)
   const { analysis } = analyzePage(cv, resizeGray(cv, full, ANALYSIS_DPI / (dpi * dpiScale)), ANALYSIS_DPI, undefined, dpiScale)
   const sheets = renderPage(cv, full, dpi * dpiScale, resolvePage(analysis, DEFAULT_SETTINGS), dpi)
-  for (const s of sheets) builder.addGrayPage(s.image, false)
+  for (const s of sheets) builder.addPage(await encodeSheet(s.image, false))
   if (p === 1) {
     const s = sheets[0].image
     await saveImage('debug-out/export-crop.png', crop(s, s.width * 0.1, s.height * 0.1, 1000, 700), 1, 4000)

@@ -1,4 +1,5 @@
 import type { PageAnalysis, ResolvedPage, Rotation } from '../pipeline/types.ts'
+import type { EncodedSheet } from './pdf-builder.ts'
 
 /** 8-bit gray pixels as rendered by pdf.js on the main thread; the buffer is transferred, not copied. */
 export interface RasterPayload {
@@ -17,9 +18,10 @@ export type WorkerRequest =
   | { type: 'reanalyze'; pageKey: string; rotation?: Rotation }
   /** Renders the corrected A4 sheet(s) of a stored page as JPEG blobs. */
   | { type: 'preview'; pageKey: string; page: ResolvedPage; outDpi: number }
-  | { type: 'exportBegin' }
+  /** Renders and compresses the A4 sheet(s) of a page for the PDF; needs no stored state. */
   | { type: 'exportPage'; raster: RasterPayload; page: ResolvedPage; outDpi: number }
-  | { type: 'exportEnd' }
+  /** Assembles the PDF from every sheet, in order. */
+  | { type: 'buildPdf'; sheets: EncodedSheet[] }
 
 export interface WorkerResponses {
   init: { ok: true }
@@ -27,9 +29,8 @@ export interface WorkerResponses {
   analyze: { analysis: PageAnalysis }
   reanalyze: { analysis: PageAnalysis }
   preview: { sheets: Blob[] }
-  exportBegin: { ok: true }
-  exportPage: { sheets: number }
-  exportEnd: { pdf: Uint8Array }
+  exportPage: { sheets: EncodedSheet[] }
+  buildPdf: { pdf: Uint8Array }
 }
 
 export type RequestMessage = WorkerRequest & { id: number }

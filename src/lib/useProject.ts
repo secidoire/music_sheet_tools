@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GlobalSettings, PageAnalysis, PageOverrides, Rotation } from '../pipeline/types.ts'
 import { DEFAULT_SETTINGS } from '../pipeline/defaults.ts'
 import { ANALYSIS_DPI, resolvePage } from '../pipeline/process.ts'
-import { ProcessorClient } from '../worker/client.ts'
+import { poolSize, ProcessorClient, ProcessorPool } from '../worker/client.ts'
+import type { EncodedSheet } from '../worker/pdf-builder.ts'
 import { rasterToJpegUrl } from './pdf.ts'
 import { openSources, type Source } from './source.ts'
 import { deliver, prepareDelivery, type ExportAction } from './deliver.ts'
@@ -40,8 +41,8 @@ export interface ExportProgress {
   total: number
 }
 
-let client: ProcessorClient | null = null
-const getClient = () => (client ??= new ProcessorClient())
+let pool: ProcessorPool | null = null
+const getPool = () => (pool ??= new ProcessorPool(poolSize()))
 
 export function useProject() {
   const [fileName, setFileName] = useState<string | null>(null)
@@ -69,8 +70,8 @@ export function useProject() {
       return null
     })
     try {
-      const c = getClient()
-      await c.call({ type: 'reset' })
+      const pool = getPool()
+      await pool.reset()
       await docRef.current?.destroy()
       docRef.current = null
       setPages((old) => {
@@ -88,29 +89,31 @@ export function useProject() {
       }))
       setPages(initial)
       setLoading({ done: 0, total: doc.pages.length })
-      const rasterize = (p: PageState) => settle(doc.pages[p.pageNo - 1].render(ANALYSIS_DPI))
-      // The next page is rasterised (main thread) while the worker analyses this one.
-      let ahead = initial.length ? rasterize(initial[0]) : null
-      for (const [i, p] of initial.entries()) {
-        if (gen !== loadGen.current) return
-        const rendered = await ahead!
-        ahead = i + 1 < initial.length ? rasterize(initial[i + 1]) : null
-        try {
-          if (!rendered.ok) throw rendered.error
-          const raster = rendered.value
-          const sourceUrl = await rasterToJpegUrl(raster, 1600)
-          const sourceSize = { width: raster.width, height: raster.height }
+      // Each worker takes the next page in turn; rasterising (main thread) overlaps their analysis.
+      let next = 0
+      let done = 0
+      await Promise.all(pool.workers.map(async (w) => {
+        while (next < initial.length) {
           if (gen !== loadGen.current) return
-          // Show the page as scanned first; the correction then animates in when the analysis lands.
-          updatePage(p.key, { sourceUrl, sourceSize })
-          const { analysis } = await c.call({ type: 'analyze', pageKey: p.key, raster }, [raster.gray])
-          if (gen !== loadGen.current) return
-          updatePage(p.key, { analysis })
-        } catch (e) {
-          updatePage(p.key, { error: String(e) })
+          const p = initial[next++]
+          try {
+            const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
+            const sourceUrl = await rasterToJpegUrl(raster, 1600)
+            const sourceSize = { width: raster.width, height: raster.height }
+            if (gen !== loadGen.current) return
+            // Show the page as scanned first; the correction then animates in when the analysis lands.
+            updatePage(p.key, { sourceUrl, sourceSize })
+            pool.assign(p.key, w)
+            const { analysis } = await w.call({ type: 'analyze', pageKey: p.key, raster }, [raster.gray])
+            if (gen !== loadGen.current) return
+            updatePage(p.key, { analysis })
+          } catch (e) {
+            updatePage(p.key, { error: String(e) })
+          }
+          setLoading({ done: ++done, total: doc.pages.length })
         }
-        setLoading({ done: p.pageNo, total: doc.pages.length })
-      }
+      }))
+      if (gen !== loadGen.current) return
       setLoading(null)
     } catch (e) {
       setError(`ファイルを読み込めませんでした（${e instanceof Error ? e.message : e}）`)
@@ -118,32 +121,36 @@ export function useProject() {
     }
   }, [updatePage])
 
-  // Preview scheduler: one request in flight at a time, selected page first.
-  const inFlight = useRef<string | null>(null)
+  // Preview scheduler: one request in flight per worker (each renders the pages it stores), selected page first.
+  const inFlight = useRef(new Set<string>())
   const [tick, setTick] = useState(0)
   useEffect(() => {
-    if (inFlight.current || exporting) return
+    if (exporting) return
+    const pool = getPool()
+    const busy = new Set([...inFlight.current].map((k) => pool.of(k)))
     const stale = (p: PageState) => p.analysis && !p.error && sig(p, settings) !== p.previewSig
     const order = [pages[selected], ...pages].filter(Boolean)
-    const next = order.find(stale)
-    if (!next || !next.analysis) return
-    const resolved = resolvePage(next.analysis, settings, next.overrides)
-    const s = sig(next, settings)
-    inFlight.current = next.key
-    getClient()
-      .call({ type: 'preview', pageKey: next.key, page: resolved, outDpi: PREVIEW_DPI })
-      .then(({ sheets }) => {
-        const urls = sheets.map((b) => URL.createObjectURL(b))
-        updatePage(next.key, (p) => {
-          p.previewUrls?.forEach((u) => URL.revokeObjectURL(u))
-          return { previewUrls: urls, previewSig: s }
+    for (const next of order) {
+      const w = pool.of(next.key)
+      if (!next.analysis || !stale(next) || inFlight.current.has(next.key) || !w || busy.has(w)) continue
+      const resolved = resolvePage(next.analysis, settings, next.overrides)
+      const s = sig(next, settings)
+      busy.add(w)
+      inFlight.current.add(next.key)
+      w.call({ type: 'preview', pageKey: next.key, page: resolved, outDpi: PREVIEW_DPI })
+        .then(({ sheets }) => {
+          const urls = sheets.map((b) => URL.createObjectURL(b))
+          updatePage(next.key, (p) => {
+            p.previewUrls?.forEach((u) => URL.revokeObjectURL(u))
+            return { previewUrls: urls, previewSig: s }
+          })
         })
-      })
-      .catch((e) => updatePage(next.key, { error: String(e) }))
-      .finally(() => {
-        inFlight.current = null
-        setTick((t) => t + 1)
-      })
+        .catch((e) => updatePage(next.key, { error: String(e) }))
+        .finally(() => {
+          inFlight.current.delete(next.key)
+          setTick((t) => t + 1)
+        })
+    }
   }, [pages, settings, selected, exporting, tick, updatePage])
 
   const setOverrides = useCallback(
@@ -159,7 +166,9 @@ export function useProject() {
   const rotatePage = useCallback(
     async (key: string, rotation?: Rotation) => {
       try {
-        const { analysis } = await getClient().call({ type: 'reanalyze', pageKey: key, rotation })
+        const w = getPool().of(key)
+        if (!w) throw new Error(`unknown page ${key}`)
+        const { analysis } = await w.call({ type: 'reanalyze', pageKey: key, rotation })
         updatePage(key, { analysis, overrides: {} })
       } catch (e) {
         updatePage(key, { error: String(e) })
@@ -173,47 +182,55 @@ export function useProject() {
     const doc = docRef.current
     if (!doc) return
     const delivery = prepareDelivery(action)
-    const c = getClient()
+    const main = getPool().workers[0]
+    // Pages are exported in parallel: the pool's first worker plus fresh ones, whose heaps are freed afterwards.
+    const extra = Array.from({ length: getPool().workers.length - 1 }, () => new ProcessorClient())
+    const lanes = [main, ...extra]
     setExporting({ done: 0, total: pages.filter((p) => p.analysis).length })
     try {
-      await c.call({ type: 'exportBegin' })
       const jobs = pages.flatMap((p) => (p.analysis ? [{ p, page: resolvePage(p.analysis, settings, p.overrides) }] : []))
       const dpis = EXPORT_FALLBACK.filter((d) => d <= exportDpi)
-      // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
-      const rasterize = (j: (typeof jobs)[number], dpi: number) => doc.pages[j.p.pageNo - 1].render(dpi / j.page.dpiScale)
-      // The next page is rasterised (main thread) at full resolution while the worker processes this one.
-      let readAhead = true
-      let ahead = jobs.length ? settle(rasterize(jobs[0], dpis[0])) : null
-      for (const [i, j] of jobs.entries()) {
-        let pre = ahead ? await ahead : null
-        ahead = readAhead && i + 1 < jobs.length ? settle(rasterize(jobs[i + 1], dpis[0])) : null
-        // Very large canvases fail on memory-constrained devices (e.g. iOS); retry at a lower resolution.
-        for (let k = 0; k < dpis.length; ) {
-          const dpi = dpis[k]
+      const sheets: EncodedSheet[][] = []
+      let done = 0
+      const exportAt = async (w: ProcessorClient, j: (typeof jobs)[number], dpi: number) => {
+        // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
+        const raster = await doc.pages[j.p.pageNo - 1].render(dpi / j.page.dpiScale)
+        return (await w.call({ type: 'exportPage', raster, page: j.page, outDpi: dpi }, [raster.gray])).sheets
+      }
+      // Working in parallel holds several full-resolution pages at once, which must never cost
+      // resolution: after any failure the extra workers are stopped (freeing their memory) and
+      // the remaining pages go through one worker, as they would without parallelism.
+      const failed: number[] = []
+      let next = 0
+      await Promise.all(lanes.map(async (w) => {
+        while (next < jobs.length && !failed.length) {
+          const i = next++
           try {
-            const raster = pre?.ok ? pre.value : await rasterize(j, dpi)
-            pre = null
-            await c.call({ type: 'exportPage', raster, page: j.page, outDpi: dpi }, [raster.gray])
-            break
+            sheets[i] = await exportAt(w, jobs[i], dpis[0])
+            setExporting({ done: ++done, total: jobs.length })
           } catch (e) {
-            pre = null
-            if (readAhead) {
-              // Reading ahead holds a second full-resolution page; it must never cost resolution.
-              // Stop it for the rest of the export and retry this resolution with the memory back.
-              readAhead = false
-              await ahead
-              ahead = null
-              console.warn(`page ${j.p.pageNo}: export at ${dpi}dpi failed, retrying without read-ahead`, e)
-              continue
-            }
-            if (k === dpis.length - 1) throw e
-            console.warn(`page ${j.p.pageNo}: export at ${dpi}dpi failed, retrying lower`, e)
-            k++
+            console.warn(`page ${jobs[i].p.pageNo}: export at ${dpis[0]}dpi failed, retrying alone`, e)
+            failed.push(i)
           }
         }
-        setExporting({ done: i + 1, total: jobs.length })
+      }))
+      extra.forEach((w) => w.terminate())
+      const rest = [...failed, ...Array.from({ length: jobs.length - next }, (_, k) => next + k)].sort((a, b) => a - b)
+      for (const i of rest) {
+        // Very large canvases fail on memory-constrained devices (e.g. iOS); retry at a lower resolution.
+        for (const [k, dpi] of dpis.entries()) {
+          try {
+            sheets[i] = await exportAt(main, jobs[i], dpi)
+            break
+          } catch (e) {
+            if (k === dpis.length - 1) throw e
+            console.warn(`page ${jobs[i].p.pageNo}: export at ${dpi}dpi failed, retrying lower`, e)
+          }
+        }
+        setExporting({ done: ++done, total: jobs.length })
       }
-      const { pdf } = await c.call({ type: 'exportEnd' })
+      const all = sheets.flat()
+      const { pdf } = await main.call({ type: 'buildPdf', sheets: all }, all.map((s) => s.data.buffer))
       const base = (fileName ?? 'score').replace(/ ほか\d+件$/, '').replace(/\.[a-z0-9]+$/i, '')
       const name = `${base}_A4.pdf`
       const bytes = pdf as Uint8Array<ArrayBuffer>
@@ -230,6 +247,7 @@ export function useProject() {
       delivery.cancel()
       setError(`PDFを作成できませんでした（${e instanceof Error ? e.message : e}）`)
     } finally {
+      extra.forEach((w) => w.terminate())
       setExporting(null)
     }
   }, [pages, settings, fileName, exportDpi])
@@ -241,13 +259,6 @@ export function useProject() {
 
 function sig(p: PageState, g: GlobalSettings): string {
   return p.analysis ? JSON.stringify(resolvePage(p.analysis, g, p.overrides)) : ''
-}
-
-type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
-
-/** Captures the outcome of work started ahead of time, so it is never an unhandled rejection if unused. */
-function settle<T>(p: Promise<T>): Promise<Settled<T>> {
-  return p.then((value) => ({ ok: true, value }), (error: unknown) => ({ ok: false, error }))
 }
 
 function revokeResult(r: ExportResult) {

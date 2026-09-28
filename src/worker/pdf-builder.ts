@@ -4,10 +4,30 @@ import { A4_MM, MM_PER_INCH } from '../pipeline/types.ts'
 
 const PT_PER_MM = 72 / MM_PER_INCH
 
+/** A page raster already compressed for embedding, so each worker can encode its own pages. */
+export interface EncodedSheet {
+  width: number
+  height: number
+  bilevel: boolean
+  /** zlib (FlateDecode) data of the DeviceGray samples. */
+  data: Uint8Array
+}
+
 /**
- * Assembles A4 pages from gray rasters.
+ * Compresses a gray raster losslessly for `PdfBuilder`. Binarised pages are packed to
+ * 1 bit per pixel.
+ */
+export async function encodeSheet(img: GrayImage, bilevel: boolean): Promise<EncodedSheet> {
+  const raw = bilevel ? pack1bit(img) : img.data
+  const stream = new Blob([raw as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream('deflate'))
+  const data = new Uint8Array(await new Response(stream).arrayBuffer())
+  return { width: img.width, height: img.height, bilevel, data }
+}
+
+/**
+ * Assembles A4 pages from encoded gray rasters.
  * Images are embedded directly as Flate-compressed DeviceGray XObjects (pdf-lib's
- * embedPng would expand them to RGB). Binarised pages are packed to 1 bit per pixel.
+ * embedPng would expand them to RGB).
  */
 export class PdfBuilder {
   private doc: PDFDocument
@@ -23,16 +43,15 @@ export class PdfBuilder {
     return new PdfBuilder(doc)
   }
 
-  addGrayPage(img: GrayImage, bilevel: boolean) {
-    const { width, height } = img
-    const data = bilevel ? pack1bit(img) : img.data
-    const stream = this.doc.context.flateStream(data, {
+  addPage(s: EncodedSheet) {
+    const stream = this.doc.context.stream(s.data, {
       Type: 'XObject',
       Subtype: 'Image',
-      Width: width,
-      Height: height,
+      Width: s.width,
+      Height: s.height,
       ColorSpace: 'DeviceGray',
-      BitsPerComponent: bilevel ? 1 : 8,
+      BitsPerComponent: s.bilevel ? 1 : 8,
+      Filter: 'FlateDecode',
     })
     const ref = this.doc.context.register(stream)
     const pw = A4_MM.width * PT_PER_MM
