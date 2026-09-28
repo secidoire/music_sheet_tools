@@ -5,7 +5,7 @@ import { ANALYSIS_DPI, resolvePage } from '../pipeline/process.ts'
 import { poolSize, ProcessorClient, ProcessorPool } from '../worker/client.ts'
 import type { EncodedSheet } from '../worker/pdf-builder.ts'
 import type { RasterPayload } from '../worker/protocol.ts'
-import { rasterToJpegUrl } from './pdf.ts'
+import { rasterToJpeg } from './pdf.ts'
 import { openSources, type Source } from './source.ts'
 import { deliver, prepareDelivery, type ExportAction } from './deliver.ts'
 
@@ -44,6 +44,12 @@ export interface ExportProgress {
 
 let pool: ProcessorPool | null = null
 const getPool = () => (pool ??= new ProcessorPool(poolSize()))
+/**
+ * With several workers each rasterises its own pages, so rasterising runs in parallel and the
+ * main thread stays free. A single worker gets its pages from the main thread instead, which
+ * rasterises the next page while the worker processes this one.
+ */
+const rasterInWorkers = (p: ProcessorPool) => p.workers.length > 1
 
 export function useProject() {
   const [fileName, setFileName] = useState<string | null>(null)
@@ -56,6 +62,8 @@ export function useProject() {
   const [exported, setExported] = useState<ExportResult | null>(null)
   const [exportDpi, setExportDpi] = useState(600)
   const docRef = useRef<Source | null>(null)
+  /** The loaded files, for workers that rasterise pages themselves. */
+  const filesRef = useRef<File[]>([])
   const loadGen = useRef(0)
 
   const updatePage = useCallback((key: string, patch: Partial<PageState> | ((p: PageState) => Partial<PageState>)) => {
@@ -79,8 +87,13 @@ export function useProject() {
         for (const p of old) [p.sourceUrl, ...(p.previewUrls ?? [])].forEach((u) => u && URL.revokeObjectURL(u))
         return []
       })
-      const doc = await openSources(files)
+      const inWorkers = rasterInWorkers(pool)
+      const [doc] = await Promise.all([
+        openSources(files),
+        inWorkers && Promise.all(pool.workers.map((w) => w.call({ type: 'open', files }))),
+      ])
       docRef.current = doc
+      filesRef.current = files
       setFileName(doc.name)
       setSelected(0)
       const initial: PageState[] = doc.pages.map((_, i) => ({
@@ -93,12 +106,13 @@ export function useProject() {
       // Rasterises a page and makes its display JPEG (main thread).
       const prepare = async (p: PageState) => {
         const raster = await doc.pages[p.pageNo - 1].render(ANALYSIS_DPI)
-        const sourceUrl = await rasterToJpegUrl(raster, 1600)
+        const sourceUrl = URL.createObjectURL(await rasterToJpeg(raster, 1600))
         return { raster, sourceUrl, sourceSize: { width: raster.width, height: raster.height } }
       }
-      // Each worker takes the next page in turn, and one page is prepared ahead so the main
-      // thread works while the workers analyse; with a single worker this is the only overlap.
-      type Ahead = { i: number; page: Promise<Settled<Awaited<ReturnType<typeof prepare>>>> }
+      // Each worker takes the next page in turn. When the main thread rasterises, one page is
+      // prepared ahead so it works while the worker analyses.
+      type Prepared = Awaited<ReturnType<typeof prepare>>
+      type Ahead = { i: number; page: Promise<Settled<Prepared>> }
       let ahead: Ahead | null = null
       let next = 0
       let done = 0
@@ -107,18 +121,30 @@ export function useProject() {
           if (gen !== loadGen.current) return
           const i = next++
           const p = initial[i]
-          const mine = ahead?.i === i ? ahead.page : settle(prepare(p))
-          if (ahead?.i === i) ahead = null
-          if (!ahead && next < initial.length) ahead = { i: next, page: settle(prepare(initial[next])) }
+          let mine: Promise<Settled<Prepared>> | null = null
+          if (!inWorkers) {
+            mine = ahead?.i === i ? ahead.page : settle(prepare(p))
+            if (ahead?.i === i) ahead = null
+            if (!ahead && next < initial.length) ahead = { i: next, page: settle(prepare(initial[next])) }
+          }
           try {
-            const r = await mine
-            if (!r.ok) throw r.error
-            const { raster, sourceUrl, sourceSize } = r.value
+            let raster: RasterPayload | undefined
+            let sourceUrl: string
+            let sourceSize: { width: number; height: number }
+            if (mine) {
+              const r = await mine
+              if (!r.ok) throw r.error
+              ;({ raster, sourceUrl, sourceSize } = r.value)
+            } else {
+              const r = await w.call({ type: 'rasterize', pageKey: p.key, index: i })
+              sourceUrl = URL.createObjectURL(r.jpeg)
+              sourceSize = { width: r.width, height: r.height }
+            }
             if (gen !== loadGen.current) return URL.revokeObjectURL(sourceUrl)
             // Show the page as scanned first; the correction then animates in when the analysis lands.
             updatePage(p.key, { sourceUrl, sourceSize })
             pool.assign(p.key, w)
-            const { analysis } = await w.call({ type: 'analyze', pageKey: p.key, raster }, [raster.gray])
+            const { analysis } = await w.call({ type: 'analyze', pageKey: p.key, raster }, raster ? [raster.gray] : [])
             if (gen !== loadGen.current) return
             updatePage(p.key, { analysis })
           } catch (e) {
@@ -201,11 +227,14 @@ export function useProject() {
     if (!doc) return
     const delivery = prepareDelivery(action)
     const main = getPool().workers[0]
+    const inWorkers = rasterInWorkers(getPool())
     // Pages are exported in parallel: the pool's first worker plus fresh ones, whose heaps are freed afterwards.
     const extra = Array.from({ length: getPool().workers.length - 1 }, () => new ProcessorClient())
     const lanes = [main, ...extra]
     setExporting({ done: 0, total: pages.filter((p) => p.analysis).length })
     try {
+      const files = filesRef.current
+      await Promise.all(extra.map((w) => w.call({ type: 'open', files })))
       const jobs = pages.flatMap((p) => (p.analysis ? [{ p, page: resolvePage(p.analysis, settings, p.overrides) }] : []))
       const dpis = EXPORT_FALLBACK.filter((d) => d <= exportDpi)
       const sheets: EncodedSheet[][] = []
@@ -213,11 +242,12 @@ export function useProject() {
       // Ask for `dpi` of real resolution: the page's size may be off by `dpiScale`.
       const rasterize = (i: number, dpi: number) => doc.pages[jobs[i].p.pageNo - 1].render(dpi / jobs[i].page.dpiScale)
       const exportAt = async (w: ProcessorClient, i: number, dpi: number, raster?: RasterPayload) => {
-        raster ??= await rasterize(i, dpi)
-        return (await w.call({ type: 'exportPage', raster, page: jobs[i].page, outDpi: dpi }, [raster.gray])).sheets
+        if (!inWorkers) raster ??= await rasterize(i, dpi)
+        const req = { type: 'exportPage', raster, index: jobs[i].p.pageNo - 1, page: jobs[i].page, outDpi: dpi } as const
+        return (await w.call(req, raster ? [raster.gray] : [])).sheets
       }
-      // One page is rasterised ahead (main thread) so it works while the workers do;
-      // with a single worker this is the only overlap.
+      // When the main thread rasterises, one page is rasterised ahead so it works while the
+      // worker does.
       let ahead: { i: number; raster: Promise<Settled<RasterPayload>> } | null = null
       const dropAhead = async () => {
         await ahead?.raster
@@ -231,13 +261,16 @@ export function useProject() {
       await Promise.all(lanes.map(async (w) => {
         while (next < jobs.length && !failed.length) {
           const i = next++
-          const mine = ahead?.i === i ? ahead.raster : settle(rasterize(i, dpis[0]))
-          if (ahead?.i === i) ahead = null
-          if (!ahead && next < jobs.length) ahead = { i: next, raster: settle(rasterize(next, dpis[0])) }
+          let mine: Promise<Settled<RasterPayload>> | null = null
+          if (!inWorkers) {
+            mine = ahead?.i === i ? ahead.raster : settle(rasterize(i, dpis[0]))
+            if (ahead?.i === i) ahead = null
+            if (!ahead && next < jobs.length) ahead = { i: next, raster: settle(rasterize(next, dpis[0])) }
+          }
           try {
-            const r = await mine
-            if (!r.ok) throw r.error
-            sheets[i] = await exportAt(w, i, dpis[0], r.value)
+            const r = mine && (await mine)
+            if (r && !r.ok) throw r.error
+            sheets[i] = await exportAt(w, i, dpis[0], r?.value)
             setExporting({ done: ++done, total: jobs.length })
           } catch (e) {
             console.warn(`page ${jobs[i].p.pageNo}: export at ${dpis[0]}dpi failed, retrying alone`, e)

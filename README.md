@@ -34,12 +34,13 @@
 | 場所 | 役割 |
 | --- | --- |
 | `src/pipeline/` | 画像処理パイプライン(向き検出・分割・傾き検出・五線検出・白飛ばし・トリミング・A4配置)。UI 非依存で、ブラウザの Worker と Node の検証スクリプトで共用 |
-| `src/worker/` | 処理用 Web Worker(OpenCV.js、pdf-lib による PDF 組み立て)。PC では2〜3個でページを並列に処理し、iOS などメモリの少ない端末では1個 |
+| `src/worker/` | 処理用 Web Worker(OpenCV.js、pdf-lib による PDF 組み立て)。PC では2〜4個でページを並列に処理し、各 Worker が PDF のラスタライズも受け持つ。iOS などメモリの少ない端末では1個で、ラスタライズはメインスレッド |
+| `vendor/opencv/` | 自前ビルドの OpenCV.js(`scripts/build-opencv.sh`)。使う関数だけ・SIMD 有効・wasm 別ファイル |
 | `src/lib/` | pdf.js によるラスタライズ(メインスレッド、タイル分割)、状態管理 |
 | `src/components/` | UI |
 | `scripts/` | UI なしの検証スクリプト、サンプル画像の生成(`make-sample.mjs`) |
 
-OpenCV.js と pdf.js の wasm/cmaps は `npm run vendor`(dev/build 前に自動実行)で `public/vendor/` にコピーされ、
+OpenCV.js(`vendor/opencv/`)と pdf.js の wasm/cmaps は `npm run vendor`(dev/build 前に自動実行)で `public/vendor/` にコピーされ、
 `vite.config.ts` の `base`(`/music_sheet_tools/`)配下から読み込まれる。
 
 ## 開発
@@ -75,6 +76,16 @@ npm run bench -- --filter フェスティバルScore --pages 6 --save before
 npm run bench -- --filter フェスティバルScore --pages 6 --compare before
 # 関数ごとの内訳(CPU プロファイル、Chrome DevTools で開ける)
 node --import tsx --cpu-prof --cpu-prof-dir=debug-out/prof scripts/bench.ts --filter フェスティバルScore --pages 6
+```
+
+### OpenCV.js の再ビルド
+
+`vendor/opencv/` はリポジトリに含めてあるので、通常の開発・ビルドにツールは要らない。
+使う OpenCV の関数を増やしたときは `scripts/opencv.config.py` に追加して再ビルドする
+(Emscripten・OpenCV のソース・cmake を `.cache/opencv-build/` に取得する。初回は数 GB・十数分)。
+
+```sh
+scripts/build-opencv.sh
 ```
 
 ## デプロイ

@@ -5,11 +5,23 @@ import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import type { RasterPayload } from '../worker/protocol.ts'
 import { pageSizeCorrection } from '../pipeline/paper.ts'
 
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+/**
+ * This module also runs inside the processing workers, which rasterise pages themselves
+ * when there are several of them (see useProject). There is no document there, so pdf.js
+ * runs in-thread and draws on OffscreenCanvas, and glyphs are drawn as paths since fonts
+ * can't be registered with a document.
+ */
+const inWorker = typeof document === 'undefined'
+if (!inWorker) GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
-const vendor = `${import.meta.env.BASE_URL}vendor/pdfjs/`
+// Absolute, since pdf.js resolves these in whichever thread fetches them.
+const vendor = new URL(`${import.meta.env.BASE_URL}vendor/pdfjs/`, globalThis.location.href).href
 
-export function openPdf(data: ArrayBuffer): Promise<PDFDocumentProxy> {
+export async function openPdf(data: ArrayBuffer): Promise<PDFDocumentProxy> {
+  if (inWorker) {
+    // pdf.js runs its "worker" side in this thread when it finds it on globalThis.
+    ;(globalThis as { pdfjsWorker?: unknown }).pdfjsWorker ??= await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs')
+  }
   return getDocument({
     data: new Uint8Array(data),
     // Scanned scores are often JBIG2/JPEG2000; their decoders are wasm files served under `base`.
@@ -17,7 +29,56 @@ export function openPdf(data: ArrayBuffer): Promise<PDFDocumentProxy> {
     cMapUrl: `${vendor}cmaps/`,
     cMapPacked: true,
     standardFontDataUrl: `${vendor}standard_fonts/`,
+    // useWorkerFetch: its default is worked out from document.baseURI.
+    ...(inWorker && { CanvasFactory: OffscreenCanvasFactory, FilterFactory: NoFilterFactory, disableFontFace: true, useWorkerFetch: true }),
   }).promise
+}
+
+/** A canvas that works on the main thread and in a worker. */
+export function newCanvas(width: number, height: number): HTMLCanvasElement | OffscreenCanvas {
+  if (inWorker) return new OffscreenCanvas(width, height)
+  const c = document.createElement('canvas')
+  c.width = width
+  c.height = height
+  return c
+}
+
+/** 2D context of either kind of canvas, set up for reading pixels back. */
+export function context2d(canvas: HTMLCanvasElement | OffscreenCanvas) {
+  return canvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null
+}
+
+type CanvasAndContext = { canvas: OffscreenCanvas | null; context: OffscreenCanvasRenderingContext2D | null }
+
+/** pdf.js's canvas factory interface (its DOM one needs a document). */
+class OffscreenCanvasFactory {
+  create(width: number, height: number): CanvasAndContext {
+    const canvas = new OffscreenCanvas(width, height)
+    return { canvas, context: canvas.getContext('2d', { willReadFrequently: true }) }
+  }
+  reset(c: CanvasAndContext, width: number, height: number) {
+    c.canvas!.width = width
+    c.canvas!.height = height
+  }
+  destroy(c: CanvasAndContext) {
+    c.canvas!.width = c.canvas!.height = 0
+    c.canvas = null
+    c.context = null
+  }
+}
+
+/** pdf.js's filter factory interface without SVG filters (they need a document); as its base class does. */
+class NoFilterFactory {
+  addFilter() { return 'none' }
+  addHCMFilter() { return 'none' }
+  addAlphaFilter() { return 'none' }
+  addLuminosityFilter() { return 'none' }
+  addKnockoutFilter() { return 'none' }
+  addHighlightHCMFilter() { return 'none' }
+  addSelectionHCMFilter() { return 'none' }
+  addSelectionFilter() { return 'none' }
+  createSelectionStyle() { return null }
+  destroy() {}
 }
 
 /**
@@ -37,7 +98,7 @@ export async function renderPage(doc: PDFDocumentProxy, pageNo: number, dpi: num
   const width = Math.round(viewport.width)
   const height = Math.round(viewport.height)
   const gray = new Uint8Array(width * height)
-  const canvas = document.createElement('canvas')
+  const canvas = newCanvas(1, 1)
   try {
     for (let ty = 0; ty < height; ty += TILE) {
       for (let tx = 0; tx < width; tx += TILE) {
@@ -45,11 +106,12 @@ export async function renderPage(doc: PDFDocumentProxy, pageNo: number, dpi: num
         const th = Math.min(TILE, height - ty)
         canvas.width = tw
         canvas.height = th
-        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        const ctx = context2d(canvas)
         if (!ctx) throw new Error(`canvas ${tw}x${th} unavailable`)
         ctx.fillStyle = '#fff'
         ctx.fillRect(0, 0, tw, th)
-        await page.render({ canvas, canvasContext: ctx, viewport, transform: [1, 0, 0, 1, -tx, -ty] }).promise
+        // pdf.js types the canvas as a DOM one; an OffscreenCanvas works the same in a worker.
+        await page.render({ canvas: canvas as HTMLCanvasElement, canvasContext: ctx as CanvasRenderingContext2D, viewport, transform: [1, 0, 0, 1, -tx, -ty] }).promise
         const { data } = ctx.getImageData(0, 0, tw, th)
         // A canvas the browser couldn't allocate reads back transparent; the white fill makes that detectable.
         if (data[3] === 0) throw new Error(`canvas ${tw}x${th} unavailable`)
@@ -67,7 +129,7 @@ export async function renderPage(doc: PDFDocumentProxy, pageNo: number, dpi: num
 }
 
 /** Downscaled JPEG of a raster for display (the full-res pixels go to the worker). */
-export async function rasterToJpegUrl(r: RasterPayload, maxWidth: number): Promise<string> {
+export async function rasterToJpeg(r: RasterPayload, maxWidth: number): Promise<Blob> {
   const src = new OffscreenCanvas(r.width, r.height)
   const g = new Uint8Array(r.gray)
   const rgba = new Uint8ClampedArray(r.width * r.height * 4)
@@ -81,5 +143,5 @@ export async function rasterToJpegUrl(r: RasterPayload, maxWidth: number): Promi
   const ctx = dst.getContext('2d')!
   ctx.imageSmoothingQuality = 'high'
   ctx.drawImage(src, 0, 0, dst.width, dst.height)
-  return URL.createObjectURL(await dst.convertToBlob({ type: 'image/jpeg', quality: 0.85 }))
+  return dst.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
 }

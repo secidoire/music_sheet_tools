@@ -1,6 +1,6 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { RasterPayload } from '../worker/protocol.ts'
-import { openPdf, renderPage } from './pdf.ts'
+import { context2d, newCanvas, openPdf, renderPage } from './pdf.ts'
 import { assumedLongMm } from '../pipeline/paper.ts'
 
 /** One page of the loaded input, rasterised on demand. */
@@ -73,7 +73,7 @@ async function renderImage(f: File, size: { width: number; height: number }, dpi
   const height = Math.max(1, Math.round(size.height * k))
   const bmp = await decode(f)
   const gray = new Uint8Array(width * height)
-  const canvas = document.createElement('canvas')
+  const canvas = newCanvas(1, 1)
   try {
     for (let ty = 0; ty < height; ty += TILE) {
       for (let tx = 0; tx < width; tx += TILE) {
@@ -81,7 +81,7 @@ async function renderImage(f: File, size: { width: number; height: number }, dpi
         const th = Math.min(TILE, height - ty)
         canvas.width = tw
         canvas.height = th
-        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        const ctx = context2d(canvas)
         if (!ctx) throw new Error(`canvas ${tw}x${th} unavailable`)
         ctx.fillStyle = '#fff'
         ctx.fillRect(0, 0, tw, th)

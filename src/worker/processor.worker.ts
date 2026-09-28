@@ -3,6 +3,7 @@ import type { CV, GrayImage } from '../pipeline/types.ts'
 import { resizeGray } from '../pipeline/image.ts'
 import { analyzePage, ANALYSIS_DPI, isBilevel, renderPage, staffDpiScale } from '../pipeline/process.ts'
 import type { RasterPayload, RequestMessage, ResponseMessage, WorkerRequest, WorkerResponses } from './protocol.ts'
+import type { Source } from '../lib/source.ts'
 import { encodeSheet, PdfBuilder } from './pdf-builder.ts'
 
 declare const self: DedicatedWorkerGlobalScope
@@ -28,6 +29,18 @@ function loadCv(): Promise<CV> {
 /** Gray sources at a real ANALYSIS_DPI, kept for re-rendering previews when settings change. */
 const sources = new Map<string, { gray: GrayImage; dpiScale: number }>()
 
+/** The loaded files, when this worker rasterises pages itself, and pages rasterised for `analyze`. */
+let source: Source | null = null
+const rasterised = new Map<string, RasterPayload>()
+
+// pdf.js is large and only needed when this worker rasterises, so it loads on first use.
+const rasterModules = () => Promise.all([import('../lib/source.ts'), import('../lib/pdf.ts')])
+
+function openedSource(): Source {
+  if (!source) throw new Error('no files opened in this worker')
+  return source
+}
+
 function toGray(r: RasterPayload): GrayImage {
   return { width: r.width, height: r.height, data: new Uint8Array(r.gray) }
 }
@@ -52,11 +65,29 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       return { ok: true }
     case 'reset':
       sources.clear()
+      rasterised.clear()
+      await source?.destroy()
+      source = null
       return { ok: true }
+    case 'open': {
+      const [{ openSources }] = await rasterModules()
+      await source?.destroy()
+      source = await openSources(req.files)
+      return { pages: source.pages.length }
+    }
+    case 'rasterize': {
+      const [, { rasterToJpeg }] = await rasterModules()
+      const raster = await openedSource().pages[req.index].render(ANALYSIS_DPI)
+      rasterised.set(req.pageKey, raster)
+      return { jpeg: await rasterToJpeg(raster, 1600), width: raster.width, height: raster.height }
+    }
     case 'analyze': {
-      let gray = toGray(req.raster)
-      const dpiScale = staffDpiScale(cv, gray, req.raster.dpi)
-      const real = req.raster.dpi * dpiScale
+      const raster = req.raster ?? rasterised.get(req.pageKey)
+      rasterised.delete(req.pageKey)
+      if (!raster) throw new Error(`page ${req.pageKey} not rasterised`)
+      let gray = toGray(raster)
+      const dpiScale = staffDpiScale(cv, gray, raster.dpi)
+      const real = raster.dpi * dpiScale
       if (Math.abs(real - ANALYSIS_DPI) > 0.5) gray = resizeGray(cv, gray, ANALYSIS_DPI / real)
       sources.set(req.pageKey, { gray, dpiScale })
       return { analysis: analyzePage(cv, gray, ANALYSIS_DPI, undefined, dpiScale).analysis }
@@ -73,7 +104,9 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       return { sheets: await Promise.all(sheets.map((s) => encodeJpeg(s.image))) }
     }
     case 'exportPage': {
-      const sheets = renderPage(cv, toGray(req.raster), req.raster.dpi * req.page.dpiScale, req.page, req.outDpi)
+      // Ask for `outDpi` of real resolution: the page's size may be off by `dpiScale`.
+      const raster = req.raster ?? (await openedSource().pages[req.index].render(req.outDpi / req.page.dpiScale))
+      const sheets = renderPage(cv, toGray(raster), raster.dpi * req.page.dpiScale, req.page, req.outDpi)
       return { sheets: await Promise.all(sheets.map((s) => encodeSheet(s.image, isBilevel(req.page)))) }
     }
     case 'buildPdf': {

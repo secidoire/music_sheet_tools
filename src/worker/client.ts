@@ -69,13 +69,16 @@ export class ProcessorPool {
 
 /**
  * How many pages to process at once. Every worker holds its own OpenCV heap and a
- * full-resolution page while exporting, so memory-constrained devices get one:
- * iOS/iPadOS kill tabs that use a lot of memory.
+ * full-resolution page while exporting (~0.55GB each at 600dpi), and a tab that runs out of
+ * memory is killed outright, so memory-constrained devices get one: iOS/iPadOS kill tabs
+ * that use a lot of memory. A fourth worker only where the browser reports 8GB or more
+ * (Chrome/Edge report deviceMemory, capped at 8; Safari and Firefox don't report it).
  */
 export function poolSize(): number {
   const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
   if (ios || (memory !== undefined && memory < 4)) return 1
   const cores = navigator.hardwareConcurrency || 2
-  return Math.max(2, Math.min(/Android|Mobi/.test(navigator.userAgent) ? 2 : 3, cores - 1))
+  const cap = /Android|Mobi/.test(navigator.userAgent) ? 2 : memory !== undefined && memory >= 8 ? 4 : 3
+  return Math.max(2, Math.min(cap, cores - 1))
 }
