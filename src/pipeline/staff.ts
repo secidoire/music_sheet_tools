@@ -36,11 +36,12 @@ const MAX_SPACING_MM = 4
  * across strips, which tolerates gentle curvature, and the exact left/right ends are
  * read from the columns where the lines are actually present.
  */
-export function detectStaves(cv: CV, gray: GrayImage, dpi: number): StaffDetection {
+export function detectStaves(cv: CV, gray: GrayImage, dpi: number, pre?: { ink: Uint8Array; strokes: Uint8Array }): StaffDetection {
   const { width: w, height: h } = gray
   const mm = dpi / 25.4
-  const ink = inkMask(cv, gray, 4 * mm)
-  const strokes = horizontalStrokes(cv, ink, w, h, dpi)
+  // `pre`: the same masks, already computed by the caller (see `pageView` in process.ts).
+  const ink = pre?.ink ?? inkMask(cv, gray, 4 * mm)
+  const strokes = pre?.strokes ?? horizontalStrokes(cv, ink, w, h, dpi)
 
   const sw = Math.max(16, Math.round(12 * mm))
   // +1: the profile below ORs two rows, which thickens every line by one row.

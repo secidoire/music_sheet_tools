@@ -5,7 +5,7 @@ import { detectSplit, type SplitResult } from './split.ts'
 import { detectSkew, horizontalStrokes, type SkewResult } from './deskew.ts'
 import { crispen, whiten } from './whiten.ts'
 import { contentBox, type Box } from './trim.ts'
-import { clefSide, detectStaves, estimateStaffSpace, type Staff } from './staff.ts'
+import { clefSide, detectStaves, estimateStaffSpace, type Staff, type StaffDetection } from './staff.ts'
 
 /** Resolution the automatic detection runs at. Results are resolution-independent. */
 export const ANALYSIS_DPI = 150
@@ -48,16 +48,18 @@ export interface AnalysisDebug {
 export function analyzePage(
   cv: CV, source: GrayImage, dpi = ANALYSIS_DPI, rotation?: Rotation, dpiScale = 1,
 ): { analysis: PageAnalysis; debug: AnalysisDebug } {
-  const autoRotation = detectOrientation(cv, source, dpi)
+  const views = new Map<Rotation, PageView>()
+  const view = (r: Rotation) => views.get(r) ?? views.set(r, pageView(cv, rotateQuarter(cv, source, r), dpi)).get(r)!
+  const autoRotation = detectOrientation(cv, source, dpi, view)
   const rot = rotation ?? autoRotation
-  const gray = rotateQuarter(cv, source, rot)
+  const v = view(rot)
+  const { gray, ink } = v
   const { width: w, height: h } = gray
-  const ink = inkMask(cv, gray, (4 / MM_PER_INCH) * dpi)
   // Landscape alone is not enough: a wide crop of a few systems is landscape too, and its
   // staves run straight through the middle where a spread has its gutter.
-  const isSpread = w / h > 1.15 && !detectStaves(cv, gray, dpi).staves.some((s) => s.x0 < w * 0.4 && s.x1 > w * 0.6)
+  const isSpread = w / h > 1.15 && !v.staves.staves.some((s) => s.x0 < w * 0.4 && s.x1 > w * 0.6)
   const split = isSpread ? detectSplit(gray, ink, dpi) : null
-  const strokes = horizontalStrokes(cv, ink, w, h, dpi)
+  const strokes = v.strokes
   // Skip a strip around the gutter and the page edges: shadows and scan borders are not staff lines.
   const pad = Math.round(w * 0.02)
   const top = Math.round(h * 0.02)
@@ -93,23 +95,53 @@ export function analyzePage(
  * staves already run horizontally is only turned upside down when most staves clearly
  * have their clef ink on the right, since a wrong flip is far worse than a missed one.
  */
-export function detectOrientation(cv: CV, gray: GrayImage, dpi: number): Rotation {
-  const strokeCount = (g: GrayImage) => {
-    const ink = inkMask(cv, g, (4 / MM_PER_INCH) * dpi)
-    return horizontalStrokes(cv, ink, g.width, g.height, dpi).reduce((a, v) => a + v, 0)
-  }
-  const cw = rotateQuarter(cv, gray, 90)
-  if (strokeCount(gray) >= 0.5 * strokeCount(cw)) {
-    const c = clefSide(detectStaves(cv, gray, dpi), gray.width)
+export function detectOrientation(
+  cv: CV, gray: GrayImage, dpi: number, view: (r: Rotation) => PageView = (r) => pageView(cv, rotateQuarter(cv, gray, r), dpi),
+): Rotation {
+  const strokeCount = (v: PageView) => v.strokes.reduce((a, s) => a + s, 0)
+  const up = view(0)
+  const cw = view(90)
+  if (strokeCount(up) >= 0.5 * strokeCount(cw)) {
+    const c = clefSide(up.staves, up.gray.width)
     const flipped = c.right >= 3 && c.right >= 3 * c.left && c.ratio < 1 / 1.5
     return flipped ? 180 : 0
   }
-  const a = clefSide(detectStaves(cv, cw, dpi), cw.width)
-  const ccw = rotateQuarter(cv, gray, 270)
-  const b = clefSide(detectStaves(cv, ccw, dpi), ccw.width)
+  const a = clefSide(cw.staves, cw.gray.width)
+  const ccw = view(270)
+  const b = clefSide(ccw.staves, ccw.gray.width)
   const va = a.left - a.right
   const vb = b.left - b.right
   return vb > va || (vb === va && b.ratio > a.ratio) ? 270 : 90
+}
+
+/**
+ * A page turned one way, with the masks and staves the detection steps share. Each is
+ * computed on first use and then reused, so orientation, spread and skew detection
+ * don't repeat the same work on the same image.
+ */
+export interface PageView {
+  gray: GrayImage
+  readonly ink: Uint8Array
+  readonly strokes: Uint8Array
+  readonly staves: StaffDetection
+}
+
+function pageView(cv: CV, gray: GrayImage, dpi: number): PageView {
+  let ink: Uint8Array | undefined
+  let strokes: Uint8Array | undefined
+  let staves: StaffDetection | undefined
+  return {
+    gray,
+    get ink() {
+      return (ink ??= inkMask(cv, gray, (4 / MM_PER_INCH) * dpi))
+    },
+    get strokes() {
+      return (strokes ??= horizontalStrokes(cv, this.ink, gray.width, gray.height, dpi))
+    },
+    get staves() {
+      return (staves ??= detectStaves(cv, gray, dpi, { ink: this.ink, strokes: this.strokes }))
+    },
+  }
 }
 
 /** Lossless clockwise rotation by a multiple of 90°. */

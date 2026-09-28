@@ -18,9 +18,9 @@ export interface SkewResult {
   /** Peak sharpness of the best projection relative to the unrotated one; < ~1.05 means "no lines found". */
   profileGain: number
   /** Length-weighted median of HoughLinesP segment angles (cross-check). */
-  houghAngle: number
+  readonly houghAngle: number
   /** Segments used for the Hough estimate, in full-image coordinates (for debug overlays). */
-  segments: [number, number, number, number][]
+  readonly segments: [number, number, number, number][]
 }
 
 /**
@@ -45,7 +45,7 @@ export function horizontalStrokes(cv: CV, ink: Uint8Array, width: number, height
 /**
  * Estimates the skew of the staff lines inside `region` of a horizontal-stroke mask.
  * Uses the projection-profile method (maximise the sharpness of the row histogram
- * after shearing by tan θ) and reports the HoughLinesP median angle alongside it.
+ * after shearing by tan θ) and reports the HoughLinesP median angle alongside it (on demand).
  */
 export function detectSkew(cv: CV, strokes: Uint8Array, width: number, region: Region): SkewResult {
   const { x: rx, y: ry, width: rw, height: rh } = region
@@ -107,13 +107,20 @@ export function detectSkew(cv: CV, strokes: Uint8Array, width: number, region: R
     if (flat < 1.15) profileAngle = 0
   }
 
-  const { angle: houghAngle, segments } = houghSkew(cv, strokes, width, region)
+  // The Hough cross-check is only for inspection (scripts/debug-pipeline.ts) and costs more
+  // than the rest of the detection together, so it runs only when read.
+  let hough: ReturnType<typeof houghSkew> | undefined
+  const lazyHough = () => (hough ??= houghSkew(cv, strokes, width, region))
   return {
     angle: round2(profileAngle),
     profileAngle: round2(profileAngle),
     profileGain,
-    houghAngle: round2(houghAngle),
-    segments,
+    get houghAngle() {
+      return round2(lazyHough().angle)
+    },
+    get segments() {
+      return lazyHough().segments
+    },
   }
 }
 
