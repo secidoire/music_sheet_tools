@@ -10,13 +10,16 @@ declare const self: DedicatedWorkerGlobalScope
 let cvPromise: Promise<CV> | null = null
 
 /**
- * OpenCV.js is a 13MB UMD script served from public/vendor (not bundled).
- * Importing it as a module runs the UMD wrapper, which assigns `globalThis.cv`
- * to a promise of the initialised module.
+ * OpenCV.js (our build, see scripts/build-opencv.sh) is a UMD script plus its .wasm,
+ * served from public/vendor (not bundled). Importing it as a module runs the UMD wrapper,
+ * which assigns `globalThis.cv` to a promise of the initialised module; the .wasm is looked
+ * up through `globalThis.Module.locateFile`, since the worker's own URL is under assets/.
  */
 function loadCv(): Promise<CV> {
   cvPromise ??= (async () => {
-    await import(/* @vite-ignore */ `${import.meta.env.BASE_URL}vendor/opencv.js`)
+    const vendor = `${import.meta.env.BASE_URL}vendor/`
+    ;(globalThis as unknown as { Module: object }).Module = { locateFile: (path: string) => vendor + path }
+    await import(/* @vite-ignore */ `${vendor}opencv.js`)
     return await (globalThis as unknown as { cv: Promise<CV> }).cv
   })()
   return cvPromise

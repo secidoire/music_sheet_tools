@@ -5,7 +5,10 @@ export interface GrayImage {
   data: Uint8Array
 }
 
-/** OpenCV.js module type. The runtime instance is injected (worker or Node), never imported directly. */
+/**
+ * OpenCV.js module type, taken from the stock package's typings (same OpenCV 5.0.0 API; a dev
+ * dependency only). The runtime is our own build in vendor/opencv, injected (worker or Node).
+ */
 export type CV = typeof import('@techstark/opencv-js')
 
 export type WhitenMode = 'levels' | 'adaptive'

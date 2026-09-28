@@ -30,3 +30,6 @@ dist-ssr
 samples/
 debug-out/
 public/vendor/
+
+# OpenCV.js build toolchain and sources (scripts/build-opencv.sh)
+.cache/

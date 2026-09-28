@@ -29,6 +29,7 @@ jobs:
       - name: Check that runtime assets are served under the base path
         run: |
           test -s dist/vendor/opencv.js
+          test -s dist/vendor/opencv_js.wasm
           test -s dist/vendor/pdfjs/wasm/jbig2.wasm
           test -s dist/vendor/pdfjs/wasm/openjpeg.wasm
           grep -q '/music_sheet_tools/assets/' dist/index.html
