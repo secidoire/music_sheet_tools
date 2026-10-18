@@ -1,8 +1,8 @@
 /// <reference lib="webworker" />
-import type { CV, GrayImage } from '../pipeline/types.ts'
+import type { CV, GrayImage, Rotation } from '../pipeline/types.ts'
 import { resizeGray } from '../pipeline/image.ts'
-import { analyzePage, ANALYSIS_DPI, isBilevel, renderPage, staffDpiScale } from '../pipeline/process.ts'
-import type { RasterPayload, RequestMessage, ResponseMessage, WorkerRequest, WorkerResponses } from './protocol.ts'
+import { analyzePage, ANALYSIS_DPI, isBilevel, renderPage, rotateQuarter, staffDpiScale } from '../pipeline/process.ts'
+import type { AnalyzeResult, RasterPayload, RequestMessage, ResponseMessage, WorkerRequest, WorkerResponses } from './protocol.ts'
 import type { Source } from '../lib/source.ts'
 import { encodeSheet, PdfBuilder } from './pdf-builder.ts'
 
@@ -58,6 +58,19 @@ async function encodeJpeg(img: GrayImage, quality = 0.85): Promise<Blob> {
   return canvas.convertToBlob({ type: 'image/jpeg', quality })
 }
 
+/** Same width as the display image made on load (see `prepare` in useProject.ts). */
+const DISPLAY_WIDTH = 1600
+
+/** Runs the detection and, when it straightened a photographed page, renders that page for display. */
+async function analyzed(cv: CV, gray: GrayImage, rotation: Rotation | undefined, dpiScale: number): Promise<AnalyzeResult> {
+  const { analysis, debug } = analyzePage(cv, gray, ANALYSIS_DPI, rotation, dpiScale)
+  if (!analysis.perspective.some(Boolean)) return { analysis }
+  // Back to the source's orientation: the view turns the display image itself.
+  const page = rotateQuarter(cv, debug.gray, ((360 - analysis.rotation) % 360) as Rotation)
+  const shown = resizeGray(cv, page, Math.min(1, DISPLAY_WIDTH / page.width))
+  return { analysis, straightened: { jpeg: await encodeJpeg(shown), width: page.width, height: page.height } }
+}
+
 async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest['type']]> {
   const cv = await loadCv()
   switch (req.type) {
@@ -90,12 +103,12 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
       const real = raster.dpi * dpiScale
       if (Math.abs(real - ANALYSIS_DPI) > 0.5) gray = resizeGray(cv, gray, ANALYSIS_DPI / real)
       sources.set(req.pageKey, { gray, dpiScale })
-      return { analysis: analyzePage(cv, gray, ANALYSIS_DPI, undefined, dpiScale).analysis }
+      return analyzed(cv, gray, undefined, dpiScale)
     }
     case 'reanalyze': {
       const src = sources.get(req.pageKey)
       if (!src) throw new Error(`unknown page ${req.pageKey}`)
-      return { analysis: analyzePage(cv, src.gray, ANALYSIS_DPI, req.rotation, src.dpiScale).analysis }
+      return analyzed(cv, src.gray, req.rotation, src.dpiScale)
     }
     case 'preview': {
       const src = sources.get(req.pageKey)

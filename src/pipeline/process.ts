@@ -1,4 +1,4 @@
-import type { CV, GlobalSettings, GrayImage, PageAnalysis, PageOverrides, ResolvedPage, Rotation } from './types.ts'
+import type { CV, GlobalSettings, GrayImage, PageAnalysis, PageOverrides, PerspectiveFix, ResolvedPage, Rotation } from './types.ts'
 import { A4_MM, MM_PER_INCH } from './types.ts'
 import { crop, grayFromMat, inkMask, matFromGray, resizeGray } from './image.ts'
 import { detectSplit, type SplitResult } from './split.ts'
@@ -6,6 +6,7 @@ import { detectSkew, horizontalStrokes, type SkewResult } from './deskew.ts'
 import { crispen, whiten } from './whiten.ts'
 import { contentBox, type Box } from './trim.ts'
 import { clefSide, detectStaves, estimateStaffSpace, type Staff, type StaffDetection } from './staff.ts'
+import { fitPerspective, rectify, type Frame } from './perspective.ts'
 
 /** Resolution the automatic detection runs at. Results are resolution-independent. */
 export const ANALYSIS_DPI = 150
@@ -32,7 +33,7 @@ export function staffDpiScale(cv: CV, gray: GrayImage, dpi: number): number {
 }
 
 export interface AnalysisDebug {
-  /** The page as analysed, i.e. after `rotation`. */
+  /** The page as analysed, i.e. after `rotation` and with any perspective removed (the page the skews were measured on). */
   gray: GrayImage
   split: SplitResult | null
   halves: SkewResult[]
@@ -59,7 +60,13 @@ export function analyzePage(
   // staves run straight through the middle where a spread has its gutter.
   const isSpread = w / h > 1.15 && !v.staves.staves.some((s) => s.x0 < w * 0.4 && s.x1 > w * 0.6)
   const split = isSpread ? detectSplit(gray, ink, dpi) : null
-  const strokes = v.strokes
+  const frames = partFrames(w, split?.x)
+  // A photographed page (or each page of a photographed spread, which lie in different
+  // planes) is seen in perspective; the staves of each part give its correction. The skew is
+  // then measured on the straightened page, as the rest of the pipeline sees it.
+  const perspective = frames.map((f) => fitPerspective(cv, gray, stavesIn(v.staves.staves, f), f, dpi))
+  const straight = perspective.some(Boolean) ? straighten(gray, frames, perspective) : gray
+  const strokes = straight === gray ? v.strokes : pageView(cv, straight, dpi).strokes
   // Skip a strip around the gutter and the page edges: shadows and scan borders are not staff lines.
   const pad = Math.round(w * 0.02)
   const top = Math.round(h * 0.02)
@@ -81,9 +88,36 @@ export function analyzePage(
       splitMethod: split?.method ?? 'center',
       angles: split ? halves.map((r) => r.angle) : [whole.angle],
       wholeAngle: whole.angle,
+      perspective,
     },
-    debug: { gray, split, halves, whole },
+    debug: { gray: straight, split, halves, whole },
   }
+}
+
+/** The column ranges of a page's output parts: both halves of a spread split at `splitX`, or the whole page. */
+function partFrames(width: number, splitX?: number): Frame[] {
+  if (splitX === undefined) return [{ x: 0, width }]
+  const sx = Math.round(splitX * width)
+  return [{ x: 0, width: sx }, { x: sx, width: width - sx }]
+}
+
+function stavesIn(staves: Staff[], f: Frame): Staff[] {
+  return staves.filter((s) => {
+    const c = (s.x0 + s.x1) / 2
+    return c >= f.x && c < f.x + f.width
+  })
+}
+
+/** The page with each part's columns replaced by their perspective-corrected content. */
+function straighten(gray: GrayImage, frames: Frame[], perspective: (PerspectiveFix | null)[]): GrayImage {
+  const out = { width: gray.width, height: gray.height, data: new Uint8Array(gray.data) }
+  frames.forEach((f, i) => {
+    const fix = perspective[i]
+    if (!fix) return
+    const part = rectify(gray, fix, f.x, f.width)
+    for (let y = 0; y < gray.height; y++) out.data.set(part.data.subarray(y * f.width, (y + 1) * f.width), y * gray.width + f.x)
+  })
+  return out
 }
 
 /**
@@ -159,6 +193,10 @@ export function rotateQuarter(cv: CV, img: GrayImage, r: Rotation): GrayImage {
 export function resolvePage(a: PageAnalysis, g: GlobalSettings, o: PageOverrides = {}): ResolvedPage {
   const split = o.split ?? a.isSpread
   const auto = split ? (a.angles.length === 2 ? a.angles : [a.wholeAngle, a.wholeAngle]) : [a.wholeAngle]
+  // The fixes are in page coordinates, so a whole-page fix serves both halves when the user
+  // splits a page; two per-half fixes can't serve a page the user joins (different planes).
+  const fixes = a.perspective
+  const perspective = !g.perspective ? [] : split === a.isSpread ? fixes : split ? [fixes[0] ?? null, fixes[0] ?? null] : []
   return {
     bypass: o.bypass ?? false,
     rotation: a.rotation,
@@ -166,6 +204,7 @@ export function resolvePage(a: PageAnalysis, g: GlobalSettings, o: PageOverrides
     split,
     splitX: o.splitX ?? a.splitX,
     angles: auto.map((v, i) => o.angles?.[i] ?? v),
+    perspective,
     whiten: g.whiten,
     trim: g.trim,
     marginMm: g.marginMm,
@@ -203,13 +242,11 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
     return [{ image: layout(cv, gray, 0, null, dpi, outDpi, p.marginMm, 'center', Infinity), content: null, staves: [] }]
   }
   gray = rotateQuarter(cv, gray, p.rotation)
-  const parts: GrayImage[] = []
-  if (p.split) {
-    const sx = Math.round(p.splitX * gray.width)
-    parts.push(crop(gray, 0, 0, sx, gray.height), crop(gray, sx, 0, gray.width - sx, gray.height))
-  } else {
-    parts.push(gray)
-  }
+  // Each part straightened (a photographed page) or cut out as it is.
+  const parts = partFrames(gray.width, p.split ? p.splitX : undefined).map((f, i) => {
+    const fix = p.perspective[i]
+    return fix ? rectify(gray, fix, f.x, f.width) : crop(gray, f.x, 0, f.width, gray.height)
+  })
   const sheets: RenderedSheet[] = []
   parts.forEach((part, i) => {
     const img = whiten(cv, part, p.whiten, dpi)
@@ -220,7 +257,9 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
       const s = Math.min(1, TRIM_DPI / dpi)
       const small = rotate(cv, resizeGray(cv, img, s), angle, true)
       staves = detectStaves(cv, small, dpi * s).staves
-      const b = contentBox(cv, small, dpi * s, staves)
+      // The unwhitened page tells paper from what lies around it on a photo.
+      const paper = p.whiten.enabled ? rotate(cv, resizeGray(cv, part, s), angle, true) : small
+      const b = contentBox(cv, small, dpi * s, staves, paper)
       box = b && { x: b.x / s, y: b.y / s, width: b.width / s, height: b.height / s }
       staves = staves.map((t) => ({
         ...t, x0: t.x0 / s, x1: t.x1 / s, top: t.top / s, bottom: t.bottom / s, spacing: t.spacing / s,
