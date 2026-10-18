@@ -113,8 +113,12 @@ async function handle(req: WorkerRequest): Promise<WorkerResponses[WorkerRequest
     case 'preview': {
       const src = sources.get(req.pageKey)
       if (!src) throw new Error(`unknown page ${req.pageKey}`)
-      const sheets = renderPage(cv, src.gray, ANALYSIS_DPI, req.page, req.outDpi)
-      return { sheets: await Promise.all(sheets.map((s) => encodeJpeg(s.image))) }
+      // A black-and-white page at preview size would be all pixel steps and dashed staff
+      // lines. Render it at twice the size and average down: the grey edges that gives are
+      // what the printed page looks like from a distance.
+      const bilevel = isBilevel(req.page)
+      const sheets = renderPage(cv, src.gray, ANALYSIS_DPI, req.page, bilevel ? req.outDpi * 2 : req.outDpi, { smooth: bilevel })
+      return { sheets: await Promise.all(sheets.map((s) => encodeJpeg(bilevel ? resizeGray(cv, s.image, 0.5) : s.image))) }
     }
     case 'exportPage': {
       // Ask for `outDpi` of real resolution: the page's size may be off by `dpiScale`.
