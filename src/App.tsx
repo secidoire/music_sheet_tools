@@ -22,7 +22,7 @@ const SETTLE_MS = 600
 export default function App() {
   const p = useProject()
   const [dragOver, setDragOver] = useState(false)
-  const [view, setView] = useState<StageView>('adjust')
+  const [view, setView] = useState<StageView>('result')
   const [activePart, setActivePart] = useState(0)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [settle, setSettle] = useState(false)

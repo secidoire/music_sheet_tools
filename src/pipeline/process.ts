@@ -230,6 +230,22 @@ export interface RenderedSheet {
 /** Trimming only needs a coarse image; staves are found on a copy at this resolution. */
 const TRIM_DPI = 150
 
+export interface RenderOptions {
+  /**
+   * Black-and-white pages: always resample the grey page and threshold last, whatever the
+   * scale (see THRESHOLD_AFTER_ENLARGING). Slower; for a preview that is shown reduced.
+   */
+  smooth?: boolean
+}
+
+/**
+ * Enlargement (output pixels per source pixel) from which a black-and-white page is
+ * thresholded after the resampling rather than before, see `renderPage`; below 1:1 it
+ * always is. A 300dpi scan exported at 600dpi stays on the fast path; photos and
+ * 150–200dpi scans don't.
+ */
+const THRESHOLD_AFTER_ENLARGING = 2.5
+
 /**
  * Applies the corrections to a source page rendered at `dpi` and lays each resulting
  * part out on an A4 portrait page at `outDpi`.
@@ -237,7 +253,7 @@ const TRIM_DPI = 150
  * To preserve quality the pixels are resampled exactly once: rotation, scaling and
  * placement are combined into a single affine warp of the (whitened) source.
  */
-export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage, outDpi: number): RenderedSheet[] {
+export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage, outDpi: number, opts: RenderOptions = {}): RenderedSheet[] {
   if (p.bypass) {
     return [{ image: layout(cv, gray, 0, null, dpi, outDpi, p.marginMm, 'center', Infinity), content: null, staves: [] }]
   }
@@ -268,13 +284,30 @@ export function renderPage(cv: CV, gray: GrayImage, dpi: number, p: ResolvedPage
     }
     // One side of a spread left blank (the back of a cover, an empty last page): no sheet for it.
     if (p.trim && p.split && !box) return
-    // A binarised page is already pure black and white and is thresholded again when packed
-    // to 1 bit, so interpolation only moves edges by a fraction of a pixel. Nearest is ~6x
-    // faster than cubic in OpenCV.js (and linear is slower than cubic there).
-    const interp = isBilevel(p) ? cv.INTER_NEAREST : cv.INTER_CUBIC
-    const image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale, interp)
-    // After the one resampling step, so edges are sharpened at the output resolution.
-    if (p.whiten.enabled && p.whiten.mode === 'levels' && p.whiten.sharpen) crispen(image)
+    let image: GrayImage
+    if (!isBilevel(p)) {
+      image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale, cv.INTER_CUBIC)
+      // After the one resampling step, so edges are sharpened at the output resolution.
+      if (p.whiten.enabled && p.whiten.mode === 'levels' && p.whiten.sharpen) crispen(image)
+    } else {
+      const m = layoutScale(img, angle, box, dpi, outDpi, p.marginMm, p.maxUpscale)
+      if (!opts.smooth && m >= 1 && m <= THRESHOLD_AFTER_ENLARGING) {
+        // About 1:1 (a scan at the export resolution): already pure black and white and
+        // thresholded again when packed to 1 bit, so interpolation would only move edges by a
+        // fraction of a pixel. Nearest is ~6x faster than cubic in OpenCV.js.
+        image = layout(cv, img, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale, cv.INTER_NEAREST)
+      } else {
+        // Enlarged a lot (a photo, a 150dpi scan) or reduced (the preview): thresholding first
+        // and resampling the result magnifies every pixel step of its edges, or aliases its
+        // thin lines into dashes. Resample the grey page instead and threshold at the output
+        // resolution, where an edge follows the smooth contour of the interpolated image and
+        // a thin line is a shallow but continuous valley. Nothing is blurred, so small glyphs
+        // keep their counters.
+        // Thresholded before the surroundings are painted white: next to pure white, the
+        // paper itself would fall under the local mean and come out as a dark frame.
+        image = layout(cv, part, angle, box, dpi, outDpi, p.marginMm, p.vAlign, p.maxUpscale, cv.INTER_CUBIC, (o) => whiten(cv, o, p.whiten, outDpi))
+      }
+    }
     sheets.push({ image, content: box, staves })
   })
   return sheets
@@ -325,10 +358,28 @@ function warp(cv: CV, img: GrayImage, m: number[], w: number, h: number, interp:
   return out
 }
 
+/** The A4 page in output pixels, its margin, the box being placed and the scale it gets (see `layout`). */
+function fitOnA4(img: GrayImage, deg: number, box: Box | null, dpi: number, outDpi: number, marginMm: number, maxUpscale: number) {
+  const rs = Math.abs(deg) < 0.01 ? { width: img.width, height: img.height } : rotatedSize(img, deg)
+  const b = box ?? { x: 0, y: 0, width: rs.width, height: rs.height }
+  const pxPerMm = outDpi / MM_PER_INCH
+  const W = Math.round(A4_MM.width * pxPerMm)
+  const H = Math.round(A4_MM.height * pxPerMm)
+  const m = Math.round(marginMm * pxPerMm)
+  const fit = Math.min((W - 2 * m) / b.width, (H - 2 * m) / b.height)
+  return { box: b, W, H, m, scale: Math.min(fit, maxUpscale * (outDpi / dpi)) }
+}
+
+/** Output pixels per source pixel that `layout` would use for this content. */
+export function layoutScale(img: GrayImage, deg: number, box: Box | null, dpi: number, outDpi: number, marginMm: number, maxUpscale: number): number {
+  return fitOnA4(img, deg, box, dpi, outDpi, marginMm, maxUpscale).scale
+}
+
 /**
  * Rotates `img` by `deg`, takes `box` (in rotated coordinates; whole rotated image when null)
  * and scales it into the A4 area inside `marginMm`, centred horizontally — all in one warp.
- * Anything outside `box` is left white.
+ * Anything outside `box` is left white. `finish` runs on the placed page before that
+ * (whitening that must not see the painted surroundings).
  * Content is never enlarged past `maxUpscale` × its original physical size, so a
  * half-empty last page keeps the same staff size as the others.
  */
@@ -343,17 +394,10 @@ export function layout(
   vAlign: 'top' | 'center',
   maxUpscale: number,
   interp: number = cv.INTER_CUBIC,
+  finish?: (placed: GrayImage) => GrayImage,
 ): GrayImage {
   const rot = Math.abs(deg) < 0.01 ? [1, 0, 0, 0, 1, 0] : rotationMatrix(img, deg)
-  const rs = Math.abs(deg) < 0.01 ? { width: img.width, height: img.height } : rotatedSize(img, deg)
-  const b = box ?? { x: 0, y: 0, width: rs.width, height: rs.height }
-
-  const pxPerMm = outDpi / MM_PER_INCH
-  const W = Math.round(A4_MM.width * pxPerMm)
-  const H = Math.round(A4_MM.height * pxPerMm)
-  const m = Math.round(marginMm * pxPerMm)
-  const fit = Math.min((W - 2 * m) / b.width, (H - 2 * m) / b.height)
-  const scale = Math.min(fit, maxUpscale * (outDpi / dpi))
+  const { box: b, scale, W, H, m } = fitOnA4(img, deg, box, dpi, outDpi, marginMm, maxUpscale)
   const dw = b.width * scale
   const dh = b.height * scale
   const dx = (W - dw) / 2
@@ -374,9 +418,10 @@ export function layout(
   } else {
     out = warp(cv, img, M, W, H, interp)
   }
+  if (finish) out = finish(out)
   // Whatever lies outside the trimmed box (the other page, stamps in the margin) would
   // otherwise show through in the margins.
-  if (box) whiteOutside(out, dx, dy, dw, dh, Math.round(pxPerMm))
+  if (box) whiteOutside(out, dx, dy, dw, dh, Math.round(outDpi / MM_PER_INCH))
   return out
 }
 
