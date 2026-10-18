@@ -33,13 +33,30 @@ export type WorkerRequest =
   /** Assembles the PDF from every sheet, in order. */
   | { type: 'buildPdf'; sheets: EncodedSheet[] }
 
+/** A page's display image (JPEG) and the size of the page it shows. */
+export interface DisplayImage {
+  jpeg: Blob
+  width: number
+  height: number
+}
+
+export interface AnalyzeResult {
+  analysis: PageAnalysis
+  /**
+   * The page with its perspective removed (a photo), in the source's orientation like the
+   * display image made on load, so the adjust view can show the page the skews refer to.
+   * Absent when no part of the page was straightened.
+   */
+  straightened?: DisplayImage
+}
+
 export interface WorkerResponses {
   init: { ok: true }
   reset: { ok: true }
   open: { pages: number }
-  rasterize: { jpeg: Blob; width: number; height: number }
-  analyze: { analysis: PageAnalysis }
-  reanalyze: { analysis: PageAnalysis }
+  rasterize: DisplayImage
+  analyze: AnalyzeResult
+  reanalyze: AnalyzeResult
   preview: { sheets: Blob[] }
   exportPage: { sheets: EncodedSheet[] }
   buildPdf: { pdf: Uint8Array }

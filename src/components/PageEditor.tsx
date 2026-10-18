@@ -91,7 +91,8 @@ export function Stage({ page, resolved: r, index, count, onSelect, onRotate, onT
           </div>
         ) : page.sourceUrl && page.sourceSize ? (
           <DeskewView
-            url={page.sourceUrl}
+            // The straightened page is what the skews were measured on; without the fix the skews would be wrong for it.
+            url={page.straightUrl && r?.perspective.some(Boolean) ? page.straightUrl : page.sourceUrl}
             width={page.sourceSize.width}
             height={page.sourceSize.height}
             rotation={r && !r.bypass ? r.rotation : 0}

@@ -19,6 +19,8 @@ export interface PageState {
   /** Source render (JPEG) for display. */
   sourceUrl?: string
   sourceSize?: { width: number; height: number }
+  /** The source with its perspective removed, when the analysis straightened it (a photo); same frame as `sourceUrl`. */
+  straightUrl?: string
   analysis?: PageAnalysis
   overrides: PageOverrides
   previewUrls?: string[]
@@ -84,7 +86,7 @@ export function useProject() {
       await docRef.current?.destroy()
       docRef.current = null
       setPages((old) => {
-        for (const p of old) [p.sourceUrl, ...(p.previewUrls ?? [])].forEach((u) => u && URL.revokeObjectURL(u))
+        for (const p of old) [p.sourceUrl, p.straightUrl, ...(p.previewUrls ?? [])].forEach((u) => u && URL.revokeObjectURL(u))
         return []
       })
       const inWorkers = rasterInWorkers(pool)
@@ -144,9 +146,9 @@ export function useProject() {
             // Show the page as scanned first; the correction then animates in when the analysis lands.
             updatePage(p.key, { sourceUrl, sourceSize })
             pool.assign(p.key, w)
-            const { analysis } = await w.call({ type: 'analyze', pageKey: p.key, raster }, raster ? [raster.gray] : [])
+            const { analysis, straightened } = await w.call({ type: 'analyze', pageKey: p.key, raster }, raster ? [raster.gray] : [])
             if (gen !== loadGen.current) return
-            updatePage(p.key, { analysis })
+            updatePage(p.key, { analysis, straightUrl: straightened && URL.createObjectURL(straightened.jpeg) })
           } catch (e) {
             updatePage(p.key, { error: String(e) })
           }
@@ -212,8 +214,11 @@ export function useProject() {
       try {
         const w = getPool().of(key)
         if (!w) throw new Error(`unknown page ${key}`)
-        const { analysis } = await w.call({ type: 'reanalyze', pageKey: key, rotation })
-        updatePage(key, { analysis, overrides: {} })
+        const { analysis, straightened } = await w.call({ type: 'reanalyze', pageKey: key, rotation })
+        updatePage(key, (p) => {
+          if (p.straightUrl) URL.revokeObjectURL(p.straightUrl)
+          return { analysis, overrides: {}, straightUrl: straightened && URL.createObjectURL(straightened.jpeg) }
+        })
       } catch (e) {
         updatePage(key, { error: String(e) })
       }

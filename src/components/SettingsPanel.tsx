@@ -49,6 +49,12 @@ export function SettingsPanel({ settings: s, onChange }: Props) {
       </div>
 
       <div className="item">
+        <Switch checked={s.perspective} onChange={(v) => set('perspective', v)} title="斜めから撮った写真の台形のゆがみを、五線を手がかりに補正します">
+          写真のゆがみを補正
+        </Switch>
+      </div>
+
+      <div className="item">
         <Switch checked={s.trim} onChange={(v) => set('trim', v)}>
           余白の自動トリミング
         </Switch>

@@ -17,6 +17,17 @@ export type VAlign = 'top' | 'center'
 export type Rotation = 0 | 90 | 180 | 270
 
 /**
+ * Perspective correction of one part of a photographed page (see perspective.ts): the
+ * quadrilateral the music block was seen as, and the rectangle it is mapped onto. Both in
+ * fractions of the (rotated) page's width and height, so the same fix applies at any resolution.
+ */
+export interface PerspectiveFix {
+  /** Top-left, top-right, bottom-right, bottom-left. */
+  quad: [number, number][]
+  rect: { x: number; y: number; width: number; height: number }
+}
+
+/**
  * Result of the automatic detection for one source page.
  * All geometry is resolution-independent (fractions of the page / degrees)
  * so it can be computed on a low-res render and applied to a 300dpi one.
@@ -41,6 +52,11 @@ export interface PageAnalysis {
   angles: number[]
   /** Detected skew for the page as a whole, used when the user turns splitting off. */
   wholeAngle: number
+  /**
+   * Perspective found for each output part (one entry, or two when `isSpread`; null where
+   * the part is flat or gave too little evidence). The skews above are measured after it.
+   */
+  perspective: (PerspectiveFix | null)[]
 }
 
 export interface WhitenSettings {
@@ -61,6 +77,8 @@ export interface GlobalSettings {
   vAlign: VAlign
   /** Upper bound for enlarging content beyond its (staff-normalised) original size. */
   maxUpscale: number
+  /** Straighten photographed pages seen at an angle (keystone correction from the staves). */
+  perspective: boolean
 }
 
 /** Per-page user overrides. `undefined` fields fall back to the automatic result. */
@@ -81,6 +99,8 @@ export interface ResolvedPage {
   split: boolean
   splitX: number
   angles: number[]
+  /** Perspective fix per part (null: none), applied before everything else. */
+  perspective: (PerspectiveFix | null)[]
   whiten: WhitenSettings
   trim: boolean
   marginMm: number
