@@ -8,6 +8,7 @@ import type { RasterPayload } from '../worker/protocol.ts'
 import { rasterToJpeg } from './pdf.ts'
 import { openSources, type Source } from './source.ts'
 import { deliver, prepareDelivery, type ExportAction } from './deliver.ts'
+import { validateFiles } from './limits.ts'
 
 export const PREVIEW_DPI = 100
 /** Export resolutions to fall back through when the browser can't allocate a canvas that large. */
@@ -74,6 +75,12 @@ export function useProject() {
 
   /** Opens PDFs and/or images as one document (pages in file-name order). */
   const load = useCallback(async (files: File[]) => {
+    try {
+      validateFiles(files)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return
+    }
     const gen = ++loadGen.current
     setError(null)
     setExported((old) => {
@@ -230,6 +237,10 @@ export function useProject() {
   const exportPdf = useCallback(async (action: ExportAction) => {
     const doc = docRef.current
     if (!doc) return
+    if (pages.some((p) => p.error || !p.analysis)) {
+      setError('Some pages could not be processed. Open a valid document before exporting.')
+      return
+    }
     const delivery = prepareDelivery(action)
     const main = getPool().workers[0]
     const inWorkers = rasterInWorkers(getPool())

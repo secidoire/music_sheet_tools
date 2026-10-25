@@ -82,7 +82,7 @@ export function Stage({ page, resolved: r, index, count, onSelect, onRotate, onT
 
       <div className="view" {...swipe}>
         {page.error ? (
-          <p className="status">このページを読み込めませんでした</p>
+          <p className="status" role="alert">{page.error}</p>
         ) : view === 'result' && page.previewUrls ? (
           <div className={`sheets${r && page.previewSig !== JSON.stringify(r) ? ' stale' : ''}`} style={{ '--n': page.previewUrls.length } as React.CSSProperties}>
             {page.previewUrls.map((u, i) => (

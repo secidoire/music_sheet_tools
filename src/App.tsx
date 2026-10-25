@@ -232,11 +232,6 @@ export default function App() {
             {p.pages.length > 1 && <PageList pages={p.pages} selected={p.selected} onSelect={selectPage} />}
           </main>
 
-          {p.error && (
-            <div className="notice error" role="alert">
-              {p.error}
-            </div>
-          )}
           {p.exported && <ExportedNotice result={p.exported} onClose={p.dismissExported} />}
 
           <footer className="bar">
@@ -256,6 +251,7 @@ export default function App() {
           </footer>
         </>
       )}
+      {p.error && <div className="notice error" role="alert">{p.error}</div>}
     </div>
   )
 }

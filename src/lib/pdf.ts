@@ -4,6 +4,7 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-d
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import type { RasterPayload } from '../worker/protocol.ts'
 import { pageSizeCorrection } from '../pipeline/paper.ts'
+import { MAX_PIXELS, validateDimensions } from './limits.ts'
 
 /**
  * This module also runs inside the processing workers, which rasterise pages themselves
@@ -22,20 +23,33 @@ export async function openPdf(data: ArrayBuffer): Promise<PDFDocumentProxy> {
     // pdf.js runs its "worker" side in this thread when it finds it on globalThis.
     ;(globalThis as { pdfjsWorker?: unknown }).pdfjsWorker ??= await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs')
   }
-  return getDocument({
+  const task = getDocument({
     data: new Uint8Array(data),
+    // PDF.js 6 removed the old isEvalSupported option and dynamic font compilation.
+    maxImageSize: MAX_PIXELS,
+    CanvasFactory: BoundedCanvasFactory,
+    // Fail visibly instead of silently dropping an image that exceeds maxImageSize.
+    stopAtErrors: true,
+    enableXfa: false,
     // Scanned scores are often JBIG2/JPEG2000; their decoders are wasm files served under `base`.
     wasmUrl: `${vendor}wasm/`,
     cMapUrl: `${vendor}cmaps/`,
     cMapPacked: true,
     standardFontDataUrl: `${vendor}standard_fonts/`,
     // useWorkerFetch: its default is worked out from document.baseURI.
-    ...(inWorker && { CanvasFactory: OffscreenCanvasFactory, FilterFactory: NoFilterFactory, disableFontFace: true, useWorkerFetch: true }),
-  }).promise
+    ...(inWorker && { FilterFactory: NoFilterFactory, disableFontFace: true, useWorkerFetch: true }),
+  })
+  try {
+    return await task.promise
+  } catch (error) {
+    await task.destroy()
+    throw error
+  }
 }
 
 /** A canvas that works on the main thread and in a worker. */
 export function newCanvas(width: number, height: number): HTMLCanvasElement | OffscreenCanvas {
+  validateDimensions(width, height)
   if (inWorker) return new OffscreenCanvas(width, height)
   const c = document.createElement('canvas')
   c.width = width
@@ -48,15 +62,16 @@ export function context2d(canvas: HTMLCanvasElement | OffscreenCanvas) {
   return canvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null
 }
 
-type CanvasAndContext = { canvas: OffscreenCanvas | null; context: OffscreenCanvasRenderingContext2D | null }
+type CanvasAndContext = { canvas: HTMLCanvasElement | OffscreenCanvas | null; context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null }
 
 /** pdf.js's canvas factory interface (its DOM one needs a document). */
-class OffscreenCanvasFactory {
+class BoundedCanvasFactory {
   create(width: number, height: number): CanvasAndContext {
-    const canvas = new OffscreenCanvas(width, height)
-    return { canvas, context: canvas.getContext('2d', { willReadFrequently: true }) }
+    const canvas = newCanvas(width, height)
+    return { canvas, context: context2d(canvas) }
   }
   reset(c: CanvasAndContext, width: number, height: number) {
+    validateDimensions(width, height)
     c.canvas!.width = width
     c.canvas!.height = height
   }
@@ -97,6 +112,7 @@ export async function renderPage(doc: PDFDocumentProxy, pageNo: number, dpi: num
   const viewport = page.getViewport({ scale: (dpi / 72) * k })
   const width = Math.round(viewport.width)
   const height = Math.round(viewport.height)
+  validateDimensions(width, height)
   const gray = new Uint8Array(width * height)
   const canvas = newCanvas(1, 1)
   try {
@@ -130,6 +146,7 @@ export async function renderPage(doc: PDFDocumentProxy, pageNo: number, dpi: num
 
 /** Downscaled JPEG of a raster for display (the full-res pixels go to the worker). */
 export async function rasterToJpeg(r: RasterPayload, maxWidth: number): Promise<Blob> {
+  validateDimensions(r.width, r.height)
   const src = new OffscreenCanvas(r.width, r.height)
   const g = new Uint8Array(r.gray)
   const rgba = new Uint8ClampedArray(r.width * r.height * 4)

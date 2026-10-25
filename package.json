@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "test:browser": "playwright test",
     "vendor": "node scripts/copy-vendor.mjs",
     "predev": "npm run vendor",
     "dev": "vite",
@@ -19,12 +21,13 @@
   },
   "dependencies": {
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^6.3.289",
+    "pdfjs-dist": "6.4.299",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.0.9",
+    "@playwright/test": "^1.64.1",
     "@techstark/opencv-js": "^5.0.0-release.1",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
