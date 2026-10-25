@@ -1,8 +1,10 @@
 import type { CV, GrayImage } from './types.ts'
+import { validateDimensions } from '../lib/limits.ts'
 
 type Mat = InstanceType<CV['Mat']>
 
 export function matFromGray(cv: CV, img: GrayImage): Mat {
+  validateDimensions(img.width, img.height)
   const m = new cv.Mat(img.height, img.width, cv.CV_8UC1)
   m.data.set(img.data)
   return m
@@ -15,10 +17,11 @@ export function grayFromMat(m: Mat): GrayImage {
 
 export function resizeGray(cv: CV, img: GrayImage, scale: number): GrayImage {
   if (scale === 1) return img
-  const src = matFromGray(cv, img)
-  const dst = new cv.Mat()
   const w = Math.max(1, Math.round(img.width * scale))
   const h = Math.max(1, Math.round(img.height * scale))
+  validateDimensions(w, h)
+  const src = matFromGray(cv, img)
+  const dst = new cv.Mat()
   cv.resize(src, dst, new cv.Size(w, h), 0, 0, scale < 1 ? cv.INTER_AREA : cv.INTER_LINEAR)
   const out = grayFromMat(dst)
   src.delete()

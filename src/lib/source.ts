@@ -2,6 +2,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { RasterPayload } from '../worker/protocol.ts'
 import { context2d, newCanvas, openPdf, renderPage } from './pdf.ts'
 import { assumedLongMm } from '../pipeline/paper.ts'
+import { validateDimensions, validateFiles, validatePageCount } from './limits.ts'
 
 /** One page of the loaded input, rasterised on demand. */
 export interface SourcePage {
@@ -24,6 +25,7 @@ export const isImage = (f: File) => f.type.startsWith('image/') || /\.(jpe?g|png
  * (so page1.jpg, page2.jpg, …, page10.jpg come out as numbered).
  */
 export async function openSources(files: File[]): Promise<Source> {
+  validateFiles(files)
   const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
   const docs: PDFDocumentProxy[] = []
   const pages: SourcePage[] = []
@@ -32,12 +34,15 @@ export async function openSources(files: File[]): Promise<Source> {
       if (isPdf(f)) {
         const doc = await openPdf(await f.arrayBuffer())
         docs.push(doc)
+        validatePageCount(pages.length + doc.numPages)
         for (let n = 1; n <= doc.numPages; n++) pages.push({ render: (dpi) => renderPage(doc, n, dpi) })
       } else {
         // Decode once up front so an unsupported format fails on load, not halfway through.
         const bmp = await decode(f)
         const size = { width: bmp.width, height: bmp.height }
         bmp.close()
+        validateDimensions(size.width, size.height)
+        validatePageCount(pages.length + 1)
         pages.push({ render: (dpi) => renderImage(f, size, dpi) })
       }
     }
@@ -71,6 +76,7 @@ async function renderImage(f: File, size: { width: number; height: number }, dpi
   const k = Math.min(1, dpi / native)
   const width = Math.max(1, Math.round(size.width * k))
   const height = Math.max(1, Math.round(size.height * k))
+  validateDimensions(width, height)
   const bmp = await decode(f)
   const gray = new Uint8Array(width * height)
   const canvas = newCanvas(1, 1)

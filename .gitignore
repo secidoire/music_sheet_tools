@@ -33,3 +33,5 @@ public/vendor/
 
 # OpenCV.js build toolchain and sources (scripts/build-opencv.sh)
 .cache/
+playwright-report/
+test-results/

@@ -25,6 +25,7 @@ export function prepareDelivery(action: ExportAction): Delivery {
   if (action === 'open' || (action === 'print' && isSafari())) {
     tab = window.open('', '_blank')
     if (tab) {
+      tab.opener = null
       tab.document.title = 'PDFを作成中'
       tab.document.body.style.cssText = 'font-family:system-ui,sans-serif;color:#74706a;display:grid;place-items:center;height:100vh;margin:0'
       tab.document.body.textContent = 'PDFを作成しています…'
@@ -73,7 +74,7 @@ export function printPdf(url: string) {
         frame.contentWindow!.focus()
         frame.contentWindow!.print()
       } catch {
-        window.open(url, '_blank')
+        window.open(url, '_blank', 'noopener,noreferrer')
       }
     }, 300)
   }

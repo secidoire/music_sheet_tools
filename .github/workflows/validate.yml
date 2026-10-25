@@ -1,0 +1,33 @@
+name: Validate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm audit --omit=dev
+      - run: npm audit
+      - name: Verify runtime assets
+        run: |
+          test -s dist/vendor/opencv.js
+          test -s dist/vendor/opencv_js.wasm
+          test -s dist/vendor/pdfjs/wasm/jbig2.wasm
+          test -s dist/vendor/pdfjs/wasm/openjpeg.wasm
+          grep -q '/music_sheet_tools/assets/' dist/index.html

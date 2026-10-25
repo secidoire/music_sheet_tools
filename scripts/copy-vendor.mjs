@@ -5,6 +5,7 @@
 //   pdfjs/cmaps/         CJK character maps
 //   pdfjs/standard_fonts/
 import { cpSync, mkdirSync, rmSync } from 'node:fs'
+import './patch-pdfjs.mjs'
 
 const out = 'public/vendor'
 rmSync(out, { recursive: true, force: true })
